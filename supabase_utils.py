@@ -115,3 +115,4 @@ def update_document_record(document_id, status, processed_data):
     except Exception as e:
         logger.exception(f"Exception when updating document record {document_id}: {str(e)}")
         return False
+</lov-write>
