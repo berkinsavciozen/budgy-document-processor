@@ -18,7 +18,7 @@ def initialize_documents_bucket(bucket_name="documents", max_attempts=3, base_de
     :return: True if initialization succeeded; otherwise, False.
     """
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")  # Changed from SUPABASE_KEY to match render.yaml
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")  # Using service key
     
     if not supabase_url or not supabase_key:
         logger.error("SUPABASE_URL or SUPABASE_SERVICE_KEY environment variables are not set.")
@@ -115,4 +115,3 @@ def update_document_record(document_id, status, processed_data):
     except Exception as e:
         logger.exception(f"Exception when updating document record {document_id}: {str(e)}")
         return False
-</lov-write>
