@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +7,7 @@ import shutil
 import logging
 import os
 from typing import Optional
+import time
 from pdf_extractor import extract_transactions
 from supabase_utils import initialize_documents_bucket, update_document_record
 
@@ -30,7 +32,26 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     """Health check endpoint required by Render deployment."""
-    return {"status": "healthy", "timestamp": import time; time.time()}
+    return {"status": "healthy", "timestamp": time.time()}
+
+@app.get("/auth-test")
+async def auth_test(authorization: Optional[str] = Header(None)):
+    """Test authentication is working."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"authenticated": False, "message": "No valid authorization token provided"}
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    # This is a simple check - in a real implementation you would verify the token
+    if token:
+        return {"authenticated": True, "message": "Valid authentication token"}
+    else:
+        return JSONResponse(
+            status_code=401,
+            content={"authenticated": False, "message": "Invalid token format"}
+        )
 
 @app.post("/process-pdf")
 async def process_pdf(
