@@ -1,3 +1,4 @@
+
 """
 Utility functions for working with Supabase storage and database
 """
@@ -69,7 +70,7 @@ def initialize_documents_bucket(bucket_name: str = DEFAULT_BUCKET_NAME) -> bool:
             
         # Create the bucket if it doesn't exist
         logger.info(f"Creating bucket '{bucket_name}'")
-        bucket_response = supabase.storage.create_bucket(bucket_name, {'public': False, 'file_size_limit': 10485760})
+        bucket_response = supabase.storage.create_bucket(bucket_name, {'public': True, 'file_size_limit': 10485760})
         
         if bucket_response:
             logger.info(f"Bucket '{bucket_name}' created successfully")
