@@ -17,10 +17,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("budgy-document-processor.supabase_utils")
 
-# Get Supabase credentials from environment variables
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+# Get Supabase credentials from environment variables with fallbacks
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://njjfycredoojnauidutp.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qamZ5Y3JlZG9vam5hdWlkdXRwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczOTUxOTY1NSwiZXhwIjoyMDU1MDk1NjU1fQ.7-emsS37XbwTj9vQMDH1lMDk1NjJH_fQ-8szb8d6Yoo"))
 DEFAULT_BUCKET_NAME = "documents"
+
+# Verify and log Supabase credentials
+if SUPABASE_URL:
+    logger.info(f"Supabase URL configured: {SUPABASE_URL[:30]}...")
+else:
+    logger.error("SUPABASE_URL environment variable not set")
+
+if SUPABASE_KEY:
+    logger.info("Supabase key configured (key hidden for security)")
+else:
+    logger.error("SUPABASE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
 
 # Initialize Supabase client
 def get_supabase_client() -> Client:
