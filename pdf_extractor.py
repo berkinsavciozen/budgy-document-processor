@@ -1,3 +1,4 @@
+
 """
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs
@@ -32,37 +33,84 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
         
         # Generate different mock data based on the filename to simulate real extraction
         if "credit" in pdf_path.lower() or "card" in pdf_path.lower():
-            # Credit card statement mock data
-            transactions = [
-                {
-                    "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
-                    "description": "Grocery Store",
-                    "amount": "-85.50",
-                    "category": "Food & Dining",
-                    "confidence": 0.92
-                },
-                {
-                    "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
-                    "description": "Online Subscription",
-                    "amount": "-15.99",
-                    "category": "Entertainment",
-                    "confidence": 0.95
-                },
-                {
-                    "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
-                    "description": "Restaurant Payment",
-                    "amount": "-45.75",
-                    "category": "Food & Dining",
-                    "confidence": 0.88
-                },
-                {
-                    "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
-                    "description": "Fuel Station",
-                    "amount": "-60.25",
-                    "category": "Transportation",
-                    "confidence": 0.94
-                }
-            ]
+            # Credit card statement mock data - specific for QNB_CreditCard
+            if "qnb" in pdf_path.lower() or "creditcard" in pdf_path.lower():
+                transactions = [
+                    {
+                        "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
+                        "description": "QNB Credit Card Payment",
+                        "amount": "-120.50",
+                        "category": "Finance",
+                        "confidence": 0.95
+                    },
+                    {
+                        "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
+                        "description": "Online Subscription Service",
+                        "amount": "-15.99",
+                        "category": "Entertainment",
+                        "confidence": 0.95
+                    },
+                    {
+                        "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
+                        "description": "International Transaction Fee",
+                        "amount": "-5.25",
+                        "category": "Fees",
+                        "confidence": 0.92
+                    },
+                    {
+                        "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
+                        "description": "Restaurant Payment",
+                        "amount": "-78.50",
+                        "category": "Food & Dining",
+                        "confidence": 0.94
+                    },
+                    {
+                        "date": (today.replace(day=18)).strftime("%Y-%m-%d"),
+                        "description": "Department Store Purchase",
+                        "amount": "-145.75",
+                        "category": "Shopping",
+                        "confidence": 0.91
+                    },
+                    {
+                        "date": (today.replace(day=22)).strftime("%Y-%m-%d"),
+                        "description": "Grocery Store",
+                        "amount": "-65.30",
+                        "category": "Food & Dining",
+                        "confidence": 0.96
+                    }
+                ]
+            else:
+                # Generic credit card statement mock data
+                transactions = [
+                    {
+                        "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
+                        "description": "Grocery Store",
+                        "amount": "-85.50",
+                        "category": "Food & Dining",
+                        "confidence": 0.92
+                    },
+                    {
+                        "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
+                        "description": "Online Subscription",
+                        "amount": "-15.99",
+                        "category": "Entertainment",
+                        "confidence": 0.95
+                    },
+                    {
+                        "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
+                        "description": "Restaurant Payment",
+                        "amount": "-45.75",
+                        "category": "Food & Dining",
+                        "confidence": 0.88
+                    },
+                    {
+                        "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
+                        "description": "Fuel Station",
+                        "amount": "-60.25",
+                        "category": "Transportation",
+                        "confidence": 0.94
+                    }
+                ]
         else:
             # Bank account statement mock data
             transactions = [
