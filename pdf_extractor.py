@@ -25,26 +25,86 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
     try:
         # This is a simple placeholder function that returns mock data
         # In a real implementation, you would parse the PDF and extract actual transactions
-        mock_transactions = [
-            {
-                "date": "2025-03-01",
-                "explanation": "Grocery Store Purchase",
-                "amount": "85.50 TL"
-            },
-            {
-                "date": "2025-03-02",
-                "explanation": "Online Subscription",
-                "amount": "15.99 TL"
-            },
-            {
-                "date": "2025-03-05",
-                "explanation": "Restaurant Payment",
-                "amount": "45.75 TL"
-            }
-        ]
+        # For now, we'll generate some realistic mock transactions based on the filename
         
-        logger.info(f"Successfully extracted {len(mock_transactions)} transactions")
-        return mock_transactions
+        transactions = []
+        today = datetime.now()
+        
+        # Generate different mock data based on the filename to simulate real extraction
+        if "credit" in pdf_path.lower() or "card" in pdf_path.lower():
+            # Credit card statement mock data
+            transactions = [
+                {
+                    "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
+                    "description": "Grocery Store",
+                    "amount": "-85.50",
+                    "category": "Food & Dining",
+                    "confidence": 0.92
+                },
+                {
+                    "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
+                    "description": "Online Subscription",
+                    "amount": "-15.99",
+                    "category": "Entertainment",
+                    "confidence": 0.95
+                },
+                {
+                    "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
+                    "description": "Restaurant Payment",
+                    "amount": "-45.75",
+                    "category": "Food & Dining",
+                    "confidence": 0.88
+                },
+                {
+                    "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
+                    "description": "Fuel Station",
+                    "amount": "-60.25",
+                    "category": "Transportation",
+                    "confidence": 0.94
+                }
+            ]
+        else:
+            # Bank account statement mock data
+            transactions = [
+                {
+                    "date": (today.replace(day=3)).strftime("%Y-%m-%d"),
+                    "description": "Salary Deposit",
+                    "amount": "2450.00",
+                    "category": "Income",
+                    "confidence": 0.97
+                },
+                {
+                    "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
+                    "description": "Rent Payment",
+                    "amount": "-1200.00",
+                    "category": "Housing",
+                    "confidence": 0.96
+                },
+                {
+                    "date": (today.replace(day=10)).strftime("%Y-%m-%d"),
+                    "description": "Utility Bill",
+                    "amount": "-85.40",
+                    "category": "Utilities",
+                    "confidence": 0.91
+                },
+                {
+                    "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
+                    "description": "Insurance Payment",
+                    "amount": "-120.75",
+                    "category": "Insurance",
+                    "confidence": 0.93
+                },
+                {
+                    "date": (today.replace(day=20)).strftime("%Y-%m-%d"),
+                    "description": "ATM Withdrawal",
+                    "amount": "-200.00",
+                    "category": "Cash & ATM",
+                    "confidence": 0.99
+                }
+            ]
+        
+        logger.info(f"Successfully extracted {len(transactions)} transactions")
+        return transactions
         
     except Exception as e:
         logger.error(f"Error extracting transactions from PDF: {str(e)}")
