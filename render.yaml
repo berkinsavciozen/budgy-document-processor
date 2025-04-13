@@ -1,5 +1,4 @@
 
-
 services:
   - type: web
     name: budgy-document-processor
@@ -21,12 +20,12 @@ services:
       - key: HUGGINGFACE_API_KEY 
         sync: false
       - key: USE_MOCK_MODE
-        value: "true"
+        value: "false"
       - key: MAX_DOCUMENT_PAGES
-        value: "10"
+        value: "20"
       - key: DEFAULT_PROCESSING_TIMEOUT
-        value: "60"
+        value: "120"
       - key: MEMORY_EFFICIENT_MODE
         value: "true"
       - key: DISABLE_ML_FEATURES
-        value: "true"
+        value: "false"
