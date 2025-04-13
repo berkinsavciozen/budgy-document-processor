@@ -19,7 +19,7 @@ logger = logging.getLogger("budgy-document-processor.supabase_utils")
 
 # Get Supabase credentials from environment variables with fallbacks
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://njjfycredoojnauidutp.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qamZ5Y3JlZG9vam5hdWlkdXRwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczOTUxOTY1NSwiZXhwIjoyMDU1MDk1NjU1fQ.7-emsS37XbwTj9vQMDH1lMDk1NjJH_fQ-8szb8d6Yoo"))
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qamZ5Y3JlZG9vam5hdWlkdXRwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczOTUxOTY1NSwiZXhwIjoyMDU1MDk1NjU1fQ.7-emsS37XbwTj9vQMDH1lMDk1NjJH_fQ-8szb8d6Yoo"))
 DEFAULT_BUCKET_NAME = "documents"
 
 # Verify and log Supabase credentials
@@ -29,7 +29,7 @@ else:
     logger.error("SUPABASE_URL environment variable not set")
 
 if SUPABASE_KEY:
-    logger.info("Supabase key configured (key hidden for security)")
+    logger.error("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
 else:
     logger.error("SUPABASE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
 
