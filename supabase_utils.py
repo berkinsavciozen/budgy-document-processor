@@ -29,9 +29,9 @@ else:
     logger.error("SUPABASE_URL environment variable not set")
 
 if SUPABASE_KEY:
-    logger.error("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
+    logger.info("Supabase key configured (key hidden for security)")
 else:
-    logger.error("SUPABASE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
+    logger.error("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
 
 # Initialize Supabase client
 def get_supabase_client() -> Client:
@@ -60,6 +60,14 @@ def initialize_documents_bucket(bucket_name: str = DEFAULT_BUCKET_NAME) -> bool:
         bool: True if bucket was initialized or already exists, False otherwise
     """
     try:
+        # Ensure bucket_name is a string
+        if bucket_name is None:
+            logger.warning("Bucket name is None, using default name")
+            bucket_name = DEFAULT_BUCKET_NAME
+            
+        bucket_name = str(bucket_name)  # Explicit conversion to string
+        
+        logger.info(f"Initializing bucket: '{bucket_name}'")
         supabase = get_supabase_client()
         
         # List existing buckets
@@ -81,7 +89,11 @@ def initialize_documents_bucket(bucket_name: str = DEFAULT_BUCKET_NAME) -> bool:
             
         # Create the bucket if it doesn't exist
         logger.info(f"Creating bucket '{bucket_name}'")
-        bucket_response = supabase.storage.create_bucket(bucket_name, {'public': True, 'file_size_limit': 10485760})
+        
+        # Ensuring the options are properly formatted
+        bucket_options = {'public': True, 'file_size_limit': 10485760}
+        
+        bucket_response = supabase.storage.create_bucket(bucket_name, bucket_options)
         
         if bucket_response:
             logger.info(f"Bucket '{bucket_name}' created successfully")
