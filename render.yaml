@@ -5,27 +5,21 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    plan: free
-    autoDeploy: true
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "1"
+      - key: DEBUG_MODE
+        value: true
+      - key: ENABLE_ADVANCED_EXTRACTION
+        value: true
+      - key: MAX_FILE_SIZE
+        value: 50
+      - key: MEMORY_LIMIT
+        value: 2048
+      - key: OCR_CONFIDENCE_THRESHOLD
+        value: 0.5
       - key: SUPABASE_URL
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: SUPABASE_SERVICE_KEY
         sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: HUGGINGFACE_API_KEY 
-        sync: false
-      - key: USE_MOCK_MODE
-        value: "false"
-      - key: MAX_DOCUMENT_PAGES
-        value: "20"
-      - key: DEFAULT_PROCESSING_TIMEOUT
-        value: "120"
-      - key: MEMORY_EFFICIENT_MODE
-        value: "true"
-      - key: DISABLE_ML_FEATURES
-        value: "false"
+      - key: TESSERACT_LANG
+        value: eng, tr
+    autoDeploy: true
