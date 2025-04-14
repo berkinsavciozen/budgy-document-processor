@@ -1,164 +1,70 @@
-
-"""
-PDF Transaction Extractor Module
-Extracts transaction data from financial PDFs
-"""
-import logging
 import re
+import pdfplumber
 from datetime import datetime
-from typing import List, Dict, Any
-import os
+import logging
 
-logger = logging.getLogger("budgy-document-processor.pdf_extractor")
+# Ensure logging is configured to capture debug information.
+logging.basicConfig(level=logging.DEBUG)
 
-# Get configuration from environment variables
-OCR_CONFIDENCE_THRESHOLD = float(os.environ.get("OCR_CONFIDENCE_THRESHOLD", "0.5"))
-ENABLE_ADVANCED_EXTRACTION = os.environ.get("ENABLE_ADVANCED_EXTRACTION", "true").lower() == "true"
-TESSERACT_LANG = os.environ.get("TESSERACT_LANG", "eng,tr")
-
-def extract_transactions(file_path: str) -> List[Dict[str, Any]]:
+def extract_transactions(pdf_path: str):
     """
-    Extract transactions from a PDF or image file.
+    Extracts transaction data from a PDF file.
+    Each transaction consists of a date (converted to yyyy/mm/dd),
+    an explanation, and the amount (with TL appended) extracted from each line.
     
-    Args:
-        file_path: Path to the file
-        
-    Returns:
-        List of transaction dictionaries
+    :param pdf_path: File path to the PDF.
+    :return: A list of dictionaries for each transaction.
     """
-    logger.info(f"Extracting transactions from file: {file_path}")
-    file_extension = file_path.split('.')[-1].lower()
+    transactions = []
+    # Pattern to match lines starting with dd/mm/yyyy
+    date_pattern = re.compile(r'^(\d{2}/\d{2}/\d{4})')
+    # Pattern to capture an amount ending with 'TL'
+    amount_pattern = re.compile(r'([\d\.,]+\s?TL)$')
     
     try:
-        # For now, we'll use mock data based on the file name
-        # In a real implementation, you would use OCR and processing to extract actual data
-        transactions = []
-        today = datetime.now()
-        
-        # Generate different mock data based on the filename to simulate real extraction
-        if "credit" in file_path.lower() or "card" in file_path.lower():
-            # Credit card statement mock data - specific for QNB_CreditCard
-            if "qnb" in file_path.lower() or "creditcard" in file_path.lower():
-                transactions = [
-                    {
-                        "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
-                        "description": "QNB Credit Card Payment",
-                        "amount": "-120.50",
-                        "category": "Finance",
-                        "confidence": 0.95
-                    },
-                    {
-                        "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
-                        "description": "Online Subscription Service",
-                        "amount": "-15.99",
-                        "category": "Entertainment",
-                        "confidence": 0.95
-                    },
-                    {
-                        "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
-                        "description": "International Transaction Fee",
-                        "amount": "-5.25",
-                        "category": "Fees",
-                        "confidence": 0.92
-                    },
-                    {
-                        "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
-                        "description": "Restaurant Payment",
-                        "amount": "-78.50",
-                        "category": "Food & Dining",
-                        "confidence": 0.94
-                    },
-                    {
-                        "date": (today.replace(day=18)).strftime("%Y-%m-%d"),
-                        "description": "Department Store Purchase",
-                        "amount": "-145.75",
-                        "category": "Shopping",
-                        "confidence": 0.91
-                    },
-                    {
-                        "date": (today.replace(day=22)).strftime("%Y-%m-%d"),
-                        "description": "Grocery Store",
-                        "amount": "-65.30",
-                        "category": "Food & Dining",
-                        "confidence": 0.96
-                    }
-                ]
-            else:
-                # Generic credit card statement mock data
-                transactions = [
-                    {
-                        "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
-                        "description": "Grocery Store",
-                        "amount": "-85.50",
-                        "category": "Food & Dining",
-                        "confidence": 0.92
-                    },
-                    {
-                        "date": (today.replace(day=8)).strftime("%Y-%m-%d"),
-                        "description": "Online Subscription",
-                        "amount": "-15.99",
-                        "category": "Entertainment",
-                        "confidence": 0.95
-                    },
-                    {
-                        "date": (today.replace(day=12)).strftime("%Y-%m-%d"),
-                        "description": "Restaurant Payment",
-                        "amount": "-45.75",
-                        "category": "Food & Dining",
-                        "confidence": 0.88
-                    },
-                    {
-                        "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
-                        "description": "Fuel Station",
-                        "amount": "-60.25",
-                        "category": "Transportation",
-                        "confidence": 0.94
-                    }
-                ]
-        else:
-            # Bank account statement mock data
-            transactions = [
-                {
-                    "date": (today.replace(day=3)).strftime("%Y-%m-%d"),
-                    "description": "Salary Deposit",
-                    "amount": "2450.00",
-                    "category": "Income",
-                    "confidence": 0.97
-                },
-                {
-                    "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
-                    "description": "Rent Payment",
-                    "amount": "-1200.00",
-                    "category": "Housing",
-                    "confidence": 0.96
-                },
-                {
-                    "date": (today.replace(day=10)).strftime("%Y-%m-%d"),
-                    "description": "Utility Bill",
-                    "amount": "-85.40",
-                    "category": "Utilities",
-                    "confidence": 0.91
-                },
-                {
-                    "date": (today.replace(day=15)).strftime("%Y-%m-%d"),
-                    "description": "Insurance Payment",
-                    "amount": "-120.75",
-                    "category": "Insurance",
-                    "confidence": 0.93
-                },
-                {
-                    "date": (today.replace(day=20)).strftime("%Y-%m-%d"),
-                    "description": "ATM Withdrawal",
-                    "amount": "-200.00",
-                    "category": "Cash & ATM",
-                    "confidence": 0.99
-                }
-            ]
-        
-        logger.info(f"Successfully extracted {len(transactions)} transactions")
-        return transactions
-        
+        with pdfplumber.open(pdf_path) as pdf:
+            num_pages = len(pdf.pages)
+            logging.debug(f"Opened PDF: {pdf_path} with {num_pages} pages.")
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if not text:
+                    logging.debug(f"Page {i + 1} has no extractable text.")
+                    continue
+                # Log a snippet from the page to confirm its content.
+                snippet = text[:300].replace('\n', ' ')
+                logging.debug(f"Page {i + 1} snippet: {snippet}")
+                lines = text.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Only process lines starting with a valid date
+                    if not date_pattern.match(line):
+                        continue
+                    amt_match = amount_pattern.search(line)
+                    if not amt_match:
+                        logging.debug(f"Skipped line (no amount found): {line}")
+                        continue
+                    amount_str = amt_match.group(1).strip()
+                    line_without_amount = line[:amt_match.start()].strip()
+                    parts = line_without_amount.split(maxsplit=1)
+                    if len(parts) < 2:
+                        logging.debug(f"Skipped line (insufficient parts): {line}")
+                        continue
+                    date_str, explanation = parts
+                    try:
+                        dt = datetime.strptime(date_str, "%d/%m/%Y")
+                        formatted_date = dt.strftime("%Y/%m/%d")
+                    except Exception as e:
+                        logging.warning(f"Failed to parse date '{date_str}' in line: {line} | Error: {e}")
+                        formatted_date = date_str  # Fallback
+                    transactions.append({
+                        "date": formatted_date,
+                        "explanation": explanation,
+                        "amount": amount_str,
+                    })
     except Exception as e:
-        logger.error(f"Error extracting transactions from file: {str(e)}")
-        # Return an empty list in case of error
-        return []
+        logging.exception(f"Error processing PDF '{pdf_path}': {e}")
+    
+    logging.debug(f"Extraction complete: {len(transactions)} transactions extracted.")
+    return transactions
