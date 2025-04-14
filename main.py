@@ -8,16 +8,14 @@ from pdf_extractor import extract_transactions
 from supabase_utils import initialize_documents_bucket, update_document_record
 
 app = FastAPI()
-
 logging.basicConfig(level=logging.DEBUG)
 
-# Allow CORS – update origins as required.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 @app.post("/process-pdf")
@@ -28,29 +26,31 @@ async def process_pdf(
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
     
-    # Initialize storage bucket before processing
     if not initialize_documents_bucket():
-        logging.error("Bucket initialization failed. Continuing without it.")
-        # Optionally: raise an error if bucket initialization is critical
+        logging.error("Bucket initialization failed. Proceeding anyway.")
+        # Optionally, you might stop here by raising an HTTP 500 error.
 
     try:
-        # Save the uploaded PDF to a temporary file.
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
-            logging.debug(f"Temporary PDF saved to: {tmp_path}")
+            logging.debug(f"Saved temporary file: {tmp_path}")
 
-        # Extract transactions from the PDF.
         transactions = extract_transactions(tmp_path)
-        logging.info(f"Extracted {len(transactions)} transactions.")
+        num_transactions = len(transactions)
+        logging.info(f"Extracted {num_transactions} transaction(s) from the PDF.")
 
-        # Optionally, if a document ID is provided, update that record in Supabase.
+        # Determine new status based on extraction result
+        new_status = "completed" if num_transactions > 0 else "error"
+
         if document_id:
-            success = update_document_record(document_id, "completed", transactions)
-            if not success:
+            if not update_document_record(document_id, new_status, transactions):
                 logging.error(f"Failed to update document record {document_id}.")
-        
+            else:
+                logging.info(f"Document record {document_id} updated with status '{new_status}'.")
+
+        # Return the extracted transaction data
         return JSONResponse(content={"transactions": transactions})
     except Exception as e:
-        logging.exception("Error processing PDF:")
+        logging.exception("Error during PDF processing:")
         raise HTTPException(status_code=500, detail=str(e))
