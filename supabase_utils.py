@@ -1,11 +1,11 @@
 
 """
-Utility functions for working with Supabase storage and database
+Supabase utility functions for storage and database operations
 """
 import os
-import time
 import logging
 import json
+import time
 from typing import Dict, Any, Optional
 from supabase import create_client, Client
 
@@ -17,151 +17,162 @@ logging.basicConfig(
 )
 logger = logging.getLogger("budgy-document-processor.supabase_utils")
 
-# Get Supabase credentials from environment variables with fallbacks
+# Get Supabase credentials from environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://njjfycredoojnauidutp.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qamZ5Y3JlZG9vam5hdWlkdXRwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczOTUxOTY1NSwiZXhwIjoyMDU1MDk1NjU1fQ.7-emsS37XbwTj9vQMDH1lMDk1NjJH_fQ-8szb8d6Yoo"))
-DEFAULT_BUCKET_NAME = "documents"
-
-# Verify and log Supabase credentials
-if SUPABASE_URL:
-    logger.info(f"Supabase URL configured: {SUPABASE_URL[:30]}...")
-else:
-    logger.error("SUPABASE_URL environment variable not set")
-
-if SUPABASE_KEY:
-    logger.info("Supabase key configured (key hidden for security)")
-else:
-    logger.error("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 # Initialize Supabase client
-def get_supabase_client() -> Client:
-    """Get or create a Supabase client"""
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        logger.error("Missing Supabase credentials - SUPABASE_URL or SUPABASE_KEY environment variables not set")
-        raise ValueError("Supabase credentials not set")
-    
-    try:
-        # Create a new client instance
-        client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Supabase client initialized successfully")
-        return client
-    except Exception as e:
-        logger.error(f"Error initializing Supabase client: {str(e)}")
-        raise
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Supabase client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase client: {str(e)}")
+    supabase = None
 
-def initialize_documents_bucket(bucket_name: str = DEFAULT_BUCKET_NAME) -> bool:
+def initialize_documents_bucket() -> bool:
     """
-    Ensure the documents bucket exists
+    Initialize the documents storage bucket if it doesn't exist
     
-    Args:
-        bucket_name: Name of the bucket to initialize
-        
     Returns:
-        bool: True if bucket was initialized or already exists, False otherwise
+        True if successful, False otherwise
     """
+    if not supabase:
+        logger.error("Supabase client not initialized")
+        return False
+    
     try:
-        # Ensure bucket_name is a string
-        if bucket_name is None:
-            logger.warning("Bucket name is None, using default name")
-            bucket_name = DEFAULT_BUCKET_NAME
-            
-        bucket_name = str(bucket_name)  # Explicit conversion to string
+        # List all buckets
+        response = supabase.storage.list_buckets()
+        buckets = response if isinstance(response, list) else []
         
-        logger.info(f"Initializing bucket: '{bucket_name}'")
-        supabase = get_supabase_client()
+        # Check if documents bucket exists
+        bucket_exists = any(bucket.get('name') == 'documents' for bucket in buckets if isinstance(bucket, dict))
         
-        # List existing buckets
-        logger.info(f"Checking if bucket '{bucket_name}' exists")
-        buckets_response = supabase.storage.list_buckets()
-        
-        # Check if the response has data attribute (different versions of the client have different response formats)
-        if hasattr(buckets_response, 'data'):
-            buckets = buckets_response.data
+        if not bucket_exists:
+            logger.info("Creating documents bucket")
+            try:
+                supabase.storage.create_bucket(
+                    'documents', 
+                    {'public': False, 'file_size_limit': 10485760}  # 10MB limit
+                )
+                logger.info("Documents bucket created successfully")
+                return True
+            except Exception as create_error:
+                logger.error(f"Failed to create documents bucket: {str(create_error)}")
+                return False
         else:
-            buckets = buckets_response
-            
-        # Check if bucket already exists
-        bucket_exists = any(bucket.get('name') == bucket_name for bucket in buckets if isinstance(bucket, dict))
-        
-        if bucket_exists:
-            logger.info(f"Bucket '{bucket_name}' already exists")
+            logger.info("Documents bucket already exists")
             return True
-            
-        # Create the bucket if it doesn't exist
-        logger.info(f"Creating bucket '{bucket_name}'")
-        
-        # Ensuring the options are properly formatted
-        bucket_options = {'public': True, 'file_size_limit': 10485760}
-        
-        bucket_response = supabase.storage.create_bucket(bucket_name, bucket_options)
-        
-        if bucket_response:
-            logger.info(f"Bucket '{bucket_name}' created successfully")
-            return True
-        else:
-            logger.warning(f"Failed to create bucket '{bucket_name}'")
-            return False
     except Exception as e:
-        logger.error(f"Error initializing bucket: {str(e)}")
+        logger.error(f"Error checking/creating documents bucket: {str(e)}")
         return False
 
-def update_document_record(document_id: str, status: str, data: Dict[str, Any]) -> bool:
+def update_document_record(document_id: str, status: str, processed_data: Dict[str, Any]) -> bool:
     """
-    Update a document record in the database
+    Update document record in the database
     
     Args:
-        document_id: The ID of the document to update
-        status: New status for the document (processed, error, etc.)
-        data: Additional data to add to the document record
-    
-    Returns:
-        bool: True if update was successful, False otherwise
-    """
-    try:
-        if not document_id:
-            logger.error("Missing document_id for update")
-            return False
-            
-        logger.info(f"Updating document record {document_id} with status: {status}")
-        supabase = get_supabase_client()
+        document_id: The ID of the document
+        status: New status (processed, error, etc.)
+        processed_data: Data from processing
         
-        # Add timestamp to the update
+    Returns:
+        True if successful, False otherwise
+    """
+    if not supabase:
+        logger.error("Supabase client not initialized")
+        return False
+    
+    try:
+        # Update document record
+        logger.info(f"Updating document {document_id} status to {status}")
+        
         update_data = {
             "status": status,
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "processed_data": data
+            "updated_at": "now()",
+            "processed_data": processed_data
         }
         
-        # Update the document record
-        result = supabase.table("documents").update(update_data).eq("id", document_id).execute()
+        response = supabase.table("documents").update(update_data).eq("id", document_id).execute()
         
-        if hasattr(result, 'data') and result.data:
-            logger.info(f"Document record updated successfully: {document_id}")
-            return True
-        else:
-            logger.warning(f"No document record found to update: {document_id}")
+        # Check if the update was successful
+        if not response.data:
+            logger.warning(f"Document {document_id} update returned no data")
             return False
+            
+        logger.info(f"Document {document_id} updated successfully")
+        return True
     except Exception as e:
         logger.error(f"Error updating document record: {str(e)}")
         return False
 
-def check_document_status(document_id: str) -> Optional[Dict[str, Any]]:
+def get_document_info(document_id: str) -> Optional[Dict[str, Any]]:
     """
-    Check the current status of a document
+    Get document information from the database
     
     Args:
-        document_id: The ID of the document to check
+        document_id: The ID of the document
         
     Returns:
-        dict: Document record data or None if not found
+        Document information if found, None otherwise
     """
+    if not supabase:
+        logger.error("Supabase client not initialized")
+        return None
+    
     try:
-        supabase = get_supabase_client()
-        result = supabase.table("documents").select("*").eq("id", document_id).limit(1).execute()
+        # Get document record
+        response = supabase.table("documents").select("*").eq("id", document_id).execute()
         
-        if hasattr(result, 'data') and result.data and len(result.data) > 0:
-            return result.data[0]
-        return None
+        # Check if document exists
+        if not response.data:
+            logger.warning(f"Document {document_id} not found")
+            return None
+            
+        document = response.data[0]
+        logger.info(f"Document {document_id} retrieved successfully")
+        return document
     except Exception as e:
-        logger.error(f"Error checking document status: {str(e)}")
+        logger.error(f"Error retrieving document: {str(e)}")
         return None
+
+def upload_file_to_storage(file_content: bytes, file_path: str) -> bool:
+    """
+    Upload a file to Supabase storage
+    
+    Args:
+        file_content: Binary content of the file
+        file_path: Path to store the file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not supabase:
+        logger.error("Supabase client not initialized")
+        return False
+    
+    try:
+        # Extract directory and filename
+        parts = file_path.split('/')
+        filename = parts[-1]
+        
+        # Get the directory path
+        directory = '/'.join(parts[:-1]) if len(parts) > 1 else ''
+        
+        # Upload file
+        response = supabase.storage.from_('documents').upload(
+            file_path, 
+            file_content,
+            {'content-type': 'application/pdf'}
+        )
+        
+        success = bool(response)
+        if success:
+            logger.info(f"File uploaded successfully to {file_path}")
+        else:
+            logger.error(f"File upload failed for {file_path}")
+            
+        return success
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        return False
