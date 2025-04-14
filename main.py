@@ -10,6 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 # Import custom modules
 from supabase_utils import initialize_documents_bucket, update_document_record
@@ -25,20 +29,32 @@ logger = logging.getLogger("budgy-document-processor")
 
 # Check and log essential environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://njjfycredoojnauidutp.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", os.environ.get("SUPABASE_SERVICE_KEY", ""))
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 if not SUPABASE_URL:
     logger.error("SUPABASE_URL environment variable not set")
-if not SUPABASE_KEY:
-    logger.error("SUPABASE_KEY or SUPABASE_SERVICE_KEY environment variable not set")
+if not SUPABASE_SERVICE_KEY:
+    logger.error("SUPABASE_SERVICE_KEY environment variable not set")
+
+# Get processing configuration from environment
+DEBUG_MODE = os.environ.get("DEBUG_MODE", "true").lower() == "true"
+MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", "50")) * 1024 * 1024  # Convert to bytes
+MEMORY_LIMIT = int(os.environ.get("MEMORY_LIMIT", "2048"))
+OCR_CONFIDENCE_THRESHOLD = float(os.environ.get("OCR_CONFIDENCE_THRESHOLD", "0.5"))
+ENABLE_ADVANCED_EXTRACTION = os.environ.get("ENABLE_ADVANCED_EXTRACTION", "true").lower() == "true"
+TESSERACT_LANG = os.environ.get("TESSERACT_LANG", "eng,tr")
 
 logger.info(f"Starting with Supabase URL: {SUPABASE_URL[:30]}...")
-logger.info("Supabase key is configured" if SUPABASE_KEY else "Supabase key is NOT configured")
+logger.info("Supabase key is configured" if SUPABASE_SERVICE_KEY else "Supabase key is NOT configured")
+logger.info(f"Debug mode: {DEBUG_MODE}")
+logger.info(f"Max file size: {MAX_FILE_SIZE/1024/1024:.1f}MB")
+logger.info(f"Advanced extraction: {ENABLE_ADVANCED_EXTRACTION}")
+logger.info(f"Tesseract languages: {TESSERACT_LANG}")
 
 # Initialize FastAPI app
 app = FastAPI(title="Budgy Document Processor", description="API for processing financial documents")
 
-# Configure CORS
+# Configure CORS - Allow all origins for development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # For production, specify exact domains
@@ -66,7 +82,10 @@ async def health_check():
     return {
         "status": "healthy", 
         "timestamp": time.time(),
-        "supabase_configured": bool(SUPABASE_URL and SUPABASE_KEY)
+        "supabase_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_KEY),
+        "debug_mode": DEBUG_MODE,
+        "advanced_extraction": ENABLE_ADVANCED_EXTRACTION,
+        "ocr_languages": TESSERACT_LANG
     }
 
 # Process PDF document
@@ -96,11 +115,12 @@ async def process_pdf(
         logger.info(f"Received PDF processing request for document ID: {document_id}")
         
         # Check file type (simple validation)
-        if not file.filename.lower().endswith('.pdf'):
-            logger.warning(f"Invalid file type: {file.filename}")
+        file_extension = file.filename.split('.')[-1].lower() if file.filename else ''
+        if file_extension not in ['pdf', 'jpg', 'jpeg', 'png']:
+            logger.warning(f"Invalid file type: {file.filename}, extension: {file_extension}")
             return JSONResponse(
                 status_code=400,
-                content={"error": "Only PDF files are supported", "success": False}
+                content={"error": "Only PDF and image files (jpg, jpeg, png) are supported", "success": False}
             )
         
         # Initialize Supabase storage bucket
@@ -109,12 +129,24 @@ async def process_pdf(
             logger.warning("Failed to initialize storage bucket, proceeding anyway")
         
         # Generate a more descriptive file name if not provided
-        processed_file_name = file_name or file.filename or f"document_{document_id}.pdf"
+        processed_file_name = file_name or file.filename or f"document_{document_id}.{file_extension}"
         
         # Read the file content
         file_content = await file.read()
         file_size = len(file_content)
         logger.info(f"File size: {file_size} bytes")
+        
+        # Check if file exceeds maximum size
+        if file_size > MAX_FILE_SIZE:
+            logger.error(f"File too large: {file_size} bytes (max: {MAX_FILE_SIZE} bytes)")
+            update_document_record(document_id, "error", {
+                "error": f"File too large: {file_size/1024/1024:.1f}MB (max: {MAX_FILE_SIZE/1024/1024:.1f}MB)",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            })
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"File too large: {file_size/1024/1024:.1f}MB (max: {MAX_FILE_SIZE/1024/1024:.1f}MB)", "success": False}
+            )
         
         # Check if file is empty
         if file_size == 0:
@@ -129,7 +161,7 @@ async def process_pdf(
             )
         
         # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_file:
             temp_file.write(file_content)
             temp_path = temp_file.name
         
@@ -210,7 +242,7 @@ async def process_pdf(
                 raise
     
     except Exception as e:
-        logger.error(f"Error processing PDF: {str(e)}")
+        logger.error(f"Error processing document: {str(e)}")
         logger.error(traceback.format_exc())
         
         # Update document record with error
@@ -323,13 +355,8 @@ async def startup_event():
 async def shutdown_event():
     logger.info("Shutting down Budgy Document Processor service")
 
-# Simple test route for document processing
-@app.get("/test-extract")
-async def test_extract():
-    """Test endpoint to verify extraction functionality without file upload"""
-    transactions = generate_mock_qnb_transactions()
-    return {
-        "success": True,
-        "transactions": transactions,
-        "transaction_count": len(transactions)
-    }
+# Start the application if running as main
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=DEBUG_MODE)
