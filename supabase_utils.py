@@ -18,20 +18,20 @@ def initialize_documents_bucket(bucket_name="documents", max_attempts=3, base_de
     }
     attempt = 0
     while attempt < max_attempts:
-         try:
-             logging.debug(f"Attempt {attempt+1}: Calling {init_url}")
-             response = requests.post(init_url, headers=headers, timeout=10)
-             logging.debug(f"Attempt {attempt+1} response: {response.status_code} - {response.text}")
-             if response.status_code == 200:
-                 logging.info("Successfully initialized the documents bucket.")
-                 return True
-             else:
-                 raise Exception(f"Unexpected status code: {response.status_code}")
-         except Exception as e:
-             attempt += 1
-             delay = base_delay * (2 ** (attempt - 1))
-             logging.warning(f"Attempt {attempt} failed: {e}. Retrying in {delay} seconds...")
-             time.sleep(delay)
+        try:
+            logging.debug(f"Attempt {attempt+1}: Calling {init_url}")
+            response = requests.post(init_url, headers=headers, timeout=10)
+            logging.debug(f"Attempt {attempt+1} response: {response.status_code} - {response.text}")
+            if response.status_code == 200:
+                logging.info("Successfully initialized the documents bucket.")
+                return True
+            else:
+                raise Exception(f"Unexpected status code: {response.status_code}")
+        except Exception as e:
+            attempt += 1
+            delay = base_delay * (2 ** (attempt - 1))
+            logging.warning(f"Attempt {attempt} failed: {e}. Retrying in {delay} seconds...")
+            time.sleep(delay)
     logging.error("All attempts to initialize bucket failed.")
     return False
 
@@ -39,7 +39,7 @@ def update_document_record(document_id, status, transactions):
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
     if not supabase_url or not supabase_service_key:
-        logging.error("SUPABASE_URL or SUPABASE_SERVICE_KEY not set.")
+        logging.error("SUPABASE_URL or SUPABASE_SERVICE_KEY environment variables are not set.")
         return False
 
     url = f"{supabase_url}/rest/v1/documents?id=eq.{document_id}"
@@ -59,8 +59,8 @@ def update_document_record(document_id, status, transactions):
             logging.info(f"Document {document_id} updated to status '{status}'.")
             return True
         else:
-            logging.error(f"Failed to update document {document_id}: {response.status_code} - {response.text}")
+            logging.error(f"Failed to update document {document_id}: {response.status_code} {response.text}")
             return False
     except Exception as e:
-        logging.exception(f"Exception updating document {document_id}:")
+        logging.exception(f"Exception when updating document {document_id}:")
         return False
