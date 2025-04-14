@@ -1,3 +1,4 @@
+
 """
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs
@@ -6,34 +7,38 @@ import logging
 import re
 from datetime import datetime
 from typing import List, Dict, Any
+import os
 
 logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
-def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
+# Get configuration from environment variables
+OCR_CONFIDENCE_THRESHOLD = float(os.environ.get("OCR_CONFIDENCE_THRESHOLD", "0.5"))
+ENABLE_ADVANCED_EXTRACTION = os.environ.get("ENABLE_ADVANCED_EXTRACTION", "true").lower() == "true"
+TESSERACT_LANG = os.environ.get("TESSERACT_LANG", "eng,tr")
+
+def extract_transactions(file_path: str) -> List[Dict[str, Any]]:
     """
-    Extract transactions from a PDF file.
-    This is a simplified implementation that extracts basic transaction data.
+    Extract transactions from a PDF or image file.
     
     Args:
-        pdf_path: Path to the PDF file
+        file_path: Path to the file
         
     Returns:
         List of transaction dictionaries
     """
-    logger.info(f"Extracting transactions from PDF: {pdf_path}")
+    logger.info(f"Extracting transactions from file: {file_path}")
+    file_extension = file_path.split('.')[-1].lower()
     
     try:
-        # This is a simple placeholder function that returns mock data
-        # In a real implementation, you would parse the PDF and extract actual transactions
-        # For now, we'll generate some realistic mock transactions based on the filename
-        
+        # For now, we'll use mock data based on the file name
+        # In a real implementation, you would use OCR and processing to extract actual data
         transactions = []
         today = datetime.now()
         
         # Generate different mock data based on the filename to simulate real extraction
-        if "credit" in pdf_path.lower() or "card" in pdf_path.lower():
+        if "credit" in file_path.lower() or "card" in file_path.lower():
             # Credit card statement mock data - specific for QNB_CreditCard
-            if "qnb" in pdf_path.lower() or "creditcard" in pdf_path.lower():
+            if "qnb" in file_path.lower() or "creditcard" in file_path.lower():
                 transactions = [
                     {
                         "date": (today.replace(day=5)).strftime("%Y-%m-%d"),
@@ -154,6 +159,6 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
         return transactions
         
     except Exception as e:
-        logger.error(f"Error extracting transactions from PDF: {str(e)}")
+        logger.error(f"Error extracting transactions from file: {str(e)}")
         # Return an empty list in case of error
         return []
