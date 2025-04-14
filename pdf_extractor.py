@@ -3,68 +3,87 @@ import pdfplumber
 from datetime import datetime
 import logging
 
-# Ensure logging is configured to capture debug information.
+# Configure logging to capture debug information
 logging.basicConfig(level=logging.DEBUG)
 
 def extract_transactions(pdf_path: str):
-    """
-    Extracts transaction data from a PDF file.
-    Each transaction consists of a date (converted to yyyy/mm/dd),
-    an explanation, and the amount (with TL appended) extracted from each line.
-    
-    :param pdf_path: File path to the PDF.
-    :return: A list of dictionaries for each transaction.
-    """
     transactions = []
-    # Pattern to match lines starting with dd/mm/yyyy
-    date_pattern = re.compile(r'^(\d{2}/\d{2}/\d{4})')
-    # Pattern to capture an amount ending with 'TL'
-    amount_pattern = re.compile(r'([\d\.,]+\s?TL)$')
+    # Regex that accepts an optional index at beginning, then captures a date in dd/mm/yyyy format.
+    date_regex = re.compile(r'^(?:\d+\s+)?(\d{2}/\d{2}/\d{4})')
     
     try:
         with pdfplumber.open(pdf_path) as pdf:
             num_pages = len(pdf.pages)
-            logging.debug(f"Opened PDF: {pdf_path} with {num_pages} pages.")
+            logging.debug(f"Opened PDF '{pdf_path}' with {num_pages} page(s).")
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text()
                 if not text:
-                    logging.debug(f"Page {i + 1} has no extractable text.")
+                    logging.debug(f"Page {i+1} has no extractable text.")
                     continue
-                # Log a snippet from the page to confirm its content.
+
                 snippet = text[:300].replace('\n', ' ')
-                logging.debug(f"Page {i + 1} snippet: {snippet}")
-                lines = text.split('\n')
-                for line in lines:
+                logging.debug(f"Page {i+1} snippet: {snippet}")
+                
+                for line in text.split('\n'):
                     line = line.strip()
                     if not line:
                         continue
-                    # Only process lines starting with a valid date
-                    if not date_pattern.match(line):
+
+                    # Try to extract the date using the regex with optional index.
+                    m = date_regex.match(line)
+                    if not m:
                         continue
-                    amt_match = amount_pattern.search(line)
-                    if not amt_match:
-                        logging.debug(f"Skipped line (no amount found): {line}")
+                    date_str = m.group(1)
+                    
+                    # Split the line into tokens.
+                    tokens = line.split()
+                    
+                    # Find the index of the token that exactly matches the date.
+                    try:
+                        date_index = tokens.index(date_str)
+                    except ValueError:
+                        logging.debug(f"Date '{date_str}' not found in tokens: {tokens}")
                         continue
-                    amount_str = amt_match.group(1).strip()
-                    line_without_amount = line[:amt_match.start()].strip()
-                    parts = line_without_amount.split(maxsplit=1)
-                    if len(parts) < 2:
-                        logging.debug(f"Skipped line (insufficient parts): {line}")
-                        continue
-                    date_str, explanation = parts
+                    
+                    # Now determine the transaction amount.
+                    amount = None
+                    explanation = ""
+                    
+                    # Case 1: If the last token ends with "TL" (as in QNB PDF)
+                    if tokens[-1].upper().endswith("TL"):
+                        amount = tokens[-1]
+                        # Explanation is tokens between date and the amount
+                        explanation_tokens = tokens[date_index+1:-1]
+                    else:
+                        # Case 2: Assume the last two tokens are [transaction_amount, balance]
+                        if len(tokens) - (date_index+1) >= 2:
+                            amount = tokens[-2]
+                            explanation_tokens = tokens[date_index+1:-2]
+                        else:
+                            logging.debug(f"Insufficient tokens after date for line: {line}")
+                            continue
+                    
+                    explanation = " ".join(explanation_tokens)
+                    
+                    # Parse and reformat the date
                     try:
                         dt = datetime.strptime(date_str, "%d/%m/%Y")
                         formatted_date = dt.strftime("%Y/%m/%d")
                     except Exception as e:
                         logging.warning(f"Failed to parse date '{date_str}' in line: {line} | Error: {e}")
                         formatted_date = date_str  # Fallback
+                        
                     transactions.append({
                         "date": formatted_date,
                         "explanation": explanation,
-                        "amount": amount_str,
+                        "amount": amount,
                     })
     except Exception as e:
         logging.exception(f"Error processing PDF '{pdf_path}': {e}")
     
-    logging.debug(f"Extraction complete: {len(transactions)} transactions extracted.")
+    if not transactions:
+        logging.error(f"No transactions extracted from '{pdf_path}'.")
+    else:
+        logging.debug(f"Extraction complete: {len(transactions)} transaction(s) found.")
+    
     return transactions
