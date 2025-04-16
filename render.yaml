@@ -5,21 +5,31 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    plan: free
+    autoDeploy: true
     envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: DEBUG_MODE
-        value: true
+        value: "true"
       - key: ENABLE_ADVANCED_EXTRACTION
-        value: true
+        value: "true"
       - key: MAX_FILE_SIZE
-        value: 50
+        value: "50"
       - key: MEMORY_LIMIT
-        value: 2048
+        value: "2048"
       - key: OCR_CONFIDENCE_THRESHOLD
-        value: 0.5
+        value: "0.5"
       - key: SUPABASE_URL
+        value: "https://njjfycredoojnauidutp.supabase.co"
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: TESSERACT_LANG
-        value: eng, tr
-    autoDeploy: true
+        value: "eng, tr"
+      - key: ALLOWED_ORIGINS
+        value: "https://preview--royal-budget-sculptor.lovable.app,https://royal-budget-sculptor.lovable.app,https://smart-budgeteer.app,https://*.lovable.app,https://*.lovable.dev,https://*.lovableproject.com,http://localhost:3000,http://localhost:5173,*"
+        sync: false
