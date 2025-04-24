@@ -1,99 +1,111 @@
-import re
-import pdfplumber
-from datetime import datetime
+
+"""
+PDF Transaction Extractor Module
+Extracts transaction data from financial PDFs
+"""
 import logging
+import re
+import os
+from datetime import datetime
+from typing import List, Dict, Any
+import pdfplumber
 
-# Configure logging to capture debug information
-logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
-def extract_transactions(pdf_path: str):
-    transactions = []
-    # Regex to capture an optional numeric index followed by a date in dd/mm/yyyy
-    # e.g., "1 02/07/2024" or "02/07/2024"
-    date_regex = re.compile(r'^(?:\d+\s+)?(\d{2}/\d{2}/\d{4})')
-    # Regex for amount: if the last token ends with "TL"
-    amount_pattern = re.compile(r'([\d\.,]+\s?TL)$')
+def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
+    """
+    Extract transactions from a PDF file.
     
-    processing_lines = False
-    all_page_snippets = []
-
+    Args:
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        List of transaction dictionaries
+    """
+    logger.info(f"Extracting transactions from PDF: {pdf_path}")
+    
+    # Check if file exists
+    if not os.path.exists(pdf_path):
+        logger.error(f"PDF file not found: {pdf_path}")
+        return []
+    
+    # Check if file is readable
+    if not os.access(pdf_path, os.R_OK):
+        logger.error(f"PDF file not readable: {pdf_path}")
+        return []
+    
+    transactions = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            num_pages = len(pdf.pages)
-            logging.debug(f"Opened PDF '{pdf_path}' with {num_pages} page(s).")
-            for i, page in enumerate(pdf.pages):
+            logger.info(f"Opened PDF with {len(pdf.pages)} pages")
+            
+            for page_num, page in enumerate(pdf.pages):
+                logger.info(f"Processing page {page_num + 1}")
                 text = page.extract_text()
-                if not text:
-                    logging.debug(f"Page {i+1} has no extractable text.")
+                
+                if text is None or text.strip() == "":
+                    logger.warning(f"No text extracted from page {page_num + 1}")
                     continue
-
-                # Save a snippet for debugging purposes.
-                snippet = text[:300].replace('\n', ' ')
-                all_page_snippets.append(f"Page {i+1} snippet: {snippet}")
-                logging.debug(f"Page {i+1} snippet: {snippet}")
-
-                # Look for the table header to start processing transaction lines.
-                if not processing_lines and "TARİH" in text and "AÇIKLAMA" in text and "MİKTAR" in text:
-                    processing_lines = True
-                    logging.debug("Found table header; starting to process transaction lines.")
-                    continue  # Skip header line itself
-
-                if not processing_lines:
-                    continue
-
-                # Process each line in the page
-                for line in text.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Match a date at the beginning (with optional index)
-                    m = date_regex.match(line)
-                    if not m:
-                        continue
-                    date_str = m.group(1)
-
-                    # Split line into tokens for further processing
-                    tokens = line.split()
-                    try:
-                        date_index = tokens.index(date_str)
-                    except ValueError:
-                        logging.debug(f"Date '{date_str}' not found in tokens: {tokens}")
-                        continue
-
-                    # Determine the transaction amount.
-                    if tokens[-1].upper().endswith("TL"):
-                        amount = tokens[-1]
-                        explanation_tokens = tokens[date_index+1:-1]
-                    else:
-                        # Assume the last two tokens are [transaction_amount, balance]
-                        if len(tokens) - (date_index+1) >= 2:
-                            amount = tokens[-2]
-                            explanation_tokens = tokens[date_index+1:-2]
-                        else:
-                            logging.debug(f"Insufficient tokens after date in line: {line}")
-                            continue
-
-                    explanation = " ".join(explanation_tokens)
+                
+                # Log a sample of the extracted text for debugging
+                logger.debug(f"Page {page_num + 1} sample text: {text[:500]}")
+                
+                # Look for transaction patterns
+                # This is a simple example - adjust the patterns based on your PDF formats
+                lines = text.split('\n')
+                
+                for line in lines:
+                    # Try to match date patterns (e.g., YYYY-MM-DD, MM/DD/YYYY, etc.)
+                    date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})', line)
+                    # Look for currency patterns (e.g., $100.00, 100.00 USD, etc.)
+                    amount_match = re.search(r'(\$|\€|\£)?(\d+,\d+\.\d{2}|\d+\.\d{2}|\d+,\d{3}\.\d{2}|\d+)', line)
                     
-                    # Parse and reformat the date
-                    try:
-                        dt = datetime.strptime(date_str, "%d/%m/%Y")
-                        formatted_date = dt.strftime("%Y/%m/%d")
-                    except Exception as e:
-                        logging.warning(f"Failed to parse date '{date_str}' in line: {line} | Error: {e}")
-                        formatted_date = date_str  # Fallback
-
-                    transactions.append({
-                        "date": formatted_date,
-                        "explanation": explanation,
-                        "amount": amount,
-                    })
+                    if date_match and amount_match:
+                        # Extract the date and amount
+                        date_str = date_match.group(0)
+                        amount_str = amount_match.group(0)
+                        
+                        # Extract the description (everything else in the line)
+                        description = line.replace(date_str, "").replace(amount_str, "").strip()
+                        
+                        # Remove common separators from description
+                        description = re.sub(r'^\s*[,;:\-\*]\s*', '', description)
+                        
+                        # Format the date consistently
+                        try:
+                            # Attempt to parse the date
+                            date_formats = ['%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d']
+                            parsed_date = None
+                            
+                            for date_format in date_formats:
+                                try:
+                                    parsed_date = datetime.strptime(date_str, date_format)
+                                    break
+                                except ValueError:
+                                    continue
+                            
+                            if parsed_date:
+                                formatted_date = parsed_date.strftime('%Y-%m-%d')
+                            else:
+                                formatted_date = date_str
+                                
+                        except Exception as e:
+                            logger.warning(f"Could not parse date '{date_str}': {e}")
+                            formatted_date = date_str
+                        
+                        # Add the transaction
+                        transaction = {
+                            "date": formatted_date,
+                            "description": description,
+                            "amount": amount_str,
+                            "confidence": 0.8  # Simple confidence score
+                        }
+                        
+                        transactions.append(transaction)
+                        logger.debug(f"Found transaction: {transaction}")
+            
+            logger.info(f"Extracted {len(transactions)} transactions from {pdf_path}")
+            return transactions
     except Exception as e:
-        logging.exception(f"Error processing PDF '{pdf_path}': {e}")
-
-    if not transactions:
-        logging.error(f"No transactions extracted from '{pdf_path}'. Page snippets: {all_page_snippets}")
-    else:
-        logging.debug(f"Extraction complete: {len(transactions)} transaction(s) found.")
-    return transactions
+        logger.exception(f"Error extracting transactions from PDF: {e}")
+        return []
