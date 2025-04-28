@@ -11,6 +11,9 @@ import pdfplumber
 
 logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
+# Read the default currency from an env var (e.g. "TRY", "USD", ...)
+DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "TRY")
+
 # Matches lines like:
 #    1 02/07/2024 EPOS PARAM/... -696,44 -10.221,81
 LINE_RE = re.compile(
@@ -30,14 +33,15 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
 
     Returns:
         List of transaction dicts, each with:
-          - date:        formatted as 'YYYY-MM-DD'
+          - date:        formatted as 'DD/MM/YYYY'
           - description: merchant or transaction text
           - amount:      float (negative for debits)
+          - currency:    default currency code (from DEFAULT_CURRENCY)
           - confidence:  simple confidence score
     """
     logger.info(f"Extracting transactions from PDF: {pdf_path}")
 
-    # Check if file exists and is readable
+    # File existence & readability checks
     if not os.path.exists(pdf_path):
         logger.error(f"PDF file not found: {pdf_path}")
         return []
@@ -64,27 +68,9 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
 
                     date_str, description, amount_str, _balance = m.groups()
 
-                    # Normalize date to ISO format
+                    # Normalize date → DD/MM/YYYY
                     try:
                         parsed_date = datetime.strptime(date_str, "%d/%m/%Y")
-                        date_iso = parsed_date.strftime("%Y-%m-%d")
+                        date_out = parsed_date.strftime("%d/%m/%Y")
                     except ValueError:
-                        date_iso = date_str  # fallback
-
-                    # Normalize amount to float (e.g. '-4.161,24' → -4161.24)
-                    amount = float(amount_str.replace(".", "").replace(",", "."))
-
-                    transactions.append({
-                        "date": date_iso,
-                        "description": description.strip(),
-                        "amount": amount,
-                        "confidence": 0.8
-                    })
-                    logger.debug(f"Found transaction: {transactions[-1]}")
-
-        logger.info(f"Extracted {len(transactions)} transactions from {pdf_path}")
-        return transactions
-
-    except Exception as e:
-        logger.exception(f"Error extracting transactions from PDF: {e}")
-        return []
+                        date_out = date_str  # fallback
