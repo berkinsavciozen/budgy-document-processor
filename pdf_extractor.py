@@ -1,5 +1,3 @@
-logger.info("⚙️  Using PDF Extractor v2.0 – strict currency regex")
-
 """
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs (bank & credit-card statements)
