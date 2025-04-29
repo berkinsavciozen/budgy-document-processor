@@ -1,75 +1,76 @@
-import io
+```python
+# unified parser by PDF layout type, not by bank
 import re
-from typing import List, Dict
-
+from io import BytesIO
 import pdfplumber
-import pytesseract
-from pdf2image import convert_from_path
 
+# generic table extraction by detecting transaction blocks
+def extract_transactions_from_layout(lines, date_pattern):
+    txns = []
+    buffer = []
+    for line in lines:
+        # accumulate lines until next date
+        parts = re.split(r"\s{2,}", line.strip())
+        if re.match(date_pattern, parts[0]):
+            if buffer:
+                txns.append(buffer)
+            buffer = [parts]
+        else:
+            if buffer:
+                buffer.append(parts)
+    if buffer:
+        txns.append(buffer)
+    # flatten and normalize
+    parsed = []
+    for group in txns:
+        date = group[0][0]
+        desc = ' '.join([g[1] for g in group if len(g)>1])
+        amt = group[0][-2] if len(group[0])>2 else ''
+        bal = group[0][-1] if len(group[0])>3 else ''
+        parsed.append({'date':date, 'description':desc, 'amount':amt, 'balance':bal})
+    return parsed
 
-def extract_text(pdf_path: str) -> str:
-    """
-    Extracts text from a PDF by rendering each page to an image
-    and running OCR, falling back to pdfplumber text extraction
-    where possible.
-    """
-    text_chunks = []
-
-    # First, try pdfplumber’s built-in text extraction
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_chunks.append(page_text)
-
-    # Next, for any pages that look empty, run OCR
-    images = convert_from_path(pdf_path, dpi=300)
-    for i, img in enumerate(images):
-        # simple heuristic: if the corresponding text_chunk is very short, OCR
-        if i >= len(text_chunks) or len(text_chunks[i].strip()) < 50:
-            ocr_text = pytesseract.image_to_string(img, lang="tur")
-            text_chunks.append(ocr_text)
-
-    return "\n".join(text_chunks)
-
-
-def parse_transactions(full_text: str) -> List[Dict[str, str]]:
-    """
-    Parses out transaction lines of the form:
-      DD/MM/YYYY  Description  Amount  Balance
-    You’ll need to tweak the regex to match your exact PDF format.
-    """
-    transactions = []
-    # Example regex; adjust as needed for your statement layout:
-    line_re = re.compile(
-        r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})"
-    )
-
-    for line in full_text.splitlines():
-        m = line_re.search(line)
-        if m:
-            date, desc, amount, balance = m.groups()
-            transactions.append({
-                "date": date,
-                "description": desc.strip(),
-                "amount": amount.strip(),
-                "balance": balance.strip(),
-            })
-    return transactions
-
-
-# ------------------------------------------------------------------------------
-def extract_transactions(pdf_path: str) -> List[Dict[str, str]]:
-    """
-    High-level entry point for the FastAPI app:
-    given a PDF file path, return the list of parsed transactions.
-    """
-    text = extract_text(pdf_path)
-    return parse_transactions(text)
-
-
-__all__ = [
-    "extract_text",
-    "parse_transactions",
-    "extract_transactions",
+# detect layout type
+LAYOUTS = [
+    {
+        'name':'creditcard',
+        'marker':'Hesap Özeti',
+        'date_pattern':r"\d{2}/\d{2}/\d{4}",
+    },
+    {
+        'name':'account',
+        'marker':'Hesap Numarası',
+        'date_pattern':r"\d{2}/\d{2}/\d{4}",
+    }
 ]
+
+def parse_pdf(pdf_bytes):
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        text = pdf.pages[0].extract_text()
+        for layout in LAYOUTS:
+            if layout['marker'] in text:
+                # extract all lines after header
+                lines = []
+                for page in pdf.pages:
+                    txt = page.extract_text().splitlines()
+                    lines += txt
+                # find start of transactions table
+                start = next((i for i,l in enumerate(lines) if re.match(layout['date_pattern'], l)), None)
+                if start is None:
+                    raise ValueError('No transactions found')
+                tx_lines = lines[start:]
+                return extract_transactions_from_layout(tx_lines, layout['date_pattern'])
+    raise ValueError('Unknown PDF type')
+
+# entry point
+def parse_credit_card(path):
+    with open(path, 'rb') as f:
+        data = f.read()
+    return parse_pdf(data)
+
+if __name__ == '__main__':
+    import sys
+    path = sys.argv[1]
+    for txn in parse_credit_card(path):
+        print(txn)
+```
