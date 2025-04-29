@@ -1,134 +1,129 @@
-# File: models.py
-from enum import Enum, auto
-from dataclasses import dataclass
 
-class PdfType(Enum):
-    CREDIT_CARD_ISBANK = auto()
-    CREDIT_CARD_QNB = auto()
-    CREDIT_CARD_GARANTI = auto()
-    ACCOUNT_YAPIKREDI = auto()
-    UNKNOWN = auto()
-
-@dataclass
-class Transaction:
-    date: str
-    description: str
-    amount: float
-    balance: float = None
-
-# File: detect_pdf_type.py
-from models import PdfType
-
-def detect_pdf_type(text: str) -> PdfType:
-    if "Maximum Visa Dijital" in text:
-        return PdfType.CREDIT_CARD_ISBANK
-    if "Ekstre tarihi" in text and "QNB Bank" in text:
-        return PdfType.CREDIT_CARD_QNB
-    if "T. Garanti Bankası" in text or "Bonus Trink" in text:
-        return PdfType.CREDIT_CARD_GARANTI
-    if "Hesap Numarası" in text and "IBAN:" in text:
-        return PdfType.ACCOUNT_YAPIKREDI
-    return PdfType.UNKNOWN
-
-# File: parsers/isbank_parser.py
+"""
+PDF Transaction Extractor Module
+Extracts transaction data from financial PDFs (bank & credit-card statements)
+with an OCR fallback for empty/CID-encoded/garbled pages, plus support for
+Turkish month-name dates.
+"""
+import logging
 import re
-from models import Transaction
+import os
+from datetime import datetime
+from typing import List, Dict, Any
 
-class IsbankParser:
-    def extract_transactions(self, text: str):
-        txns = []
-        for line in text.splitlines():
-            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)\s+(-?[\d.,]+)", line)
-            if m:
-                date, desc, amt, bal = m.groups()
-                amt = float(amt.replace('.', '').replace(',', '.'))
-                bal = float(bal.replace('.', '').replace(',', '.'))
-                txns.append(Transaction(date, desc.strip(), amt, bal))
-        return txns
+import pdfplumber
+from PIL import Image
+import pytesseract
 
-# File: parsers/qnb_parser.py
-import re
-from models import Transaction
+logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
-class QnbParser:
-    def extract_transactions(self, text: str):
-        txns = []
-        for line in text.splitlines():
-            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
-            if m:
-                date, desc, amt = m.groups()
-                amt = float(amt.replace('.', '').replace(',', '.'))
-                txns.append(Transaction(date, desc.strip(), amt, None))
-        return txns
+DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "TRY")
 
-# File: parsers/garanti_parser.py
-import re
-from models import Transaction
+# 1) Bank statements: row#, DD/MM/YYYY, desc, amount, balance
+ACCOUNT_LINE_RE = re.compile(
+    r'^\s*\d+\s+'
+    r'(\d{2}/\d{2}/\d{4})\s+'
+    r'(.+?)\s+'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'
+)
 
-class GarantiParser:
-    def extract_transactions(self, text: str):
-        txns = []
-        for line in text.splitlines():
-            m = re.search(r"(\d{2} \w+ \d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
-            if m:
-                date, desc, amt = m.groups()
-                # parse date e.g. '10 Kasım 2024' into DD/MM/YYYY if needed
-                amt = float(amt.replace('.', '').replace(',', '.'))
-                txns.append(Transaction(date, desc.strip(), amt, None))
-        return txns
+# 2) Credit cards ending in “TL”
+CREDIT_TL_RE = re.compile(
+    r'^\s*(\d{2}/\d{2}/\d{4})\s+'
+    r'(.+?)\s+'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\s*$'
+)
 
-# File: parsers/yapikredi_parser.py
-import re
-from models import Transaction
+# 3) Credit cards with multiple trailing numeric columns
+CREDIT_MULTI_RE = re.compile(
+    r'^\s*(\d{2}/\d{2}/\d{4})\s*'
+    r'(.+?)\s+'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
+    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+\s*$'
+)
 
-class YapiKrediParser:
-    def extract_transactions(self, text: str):
-        txns = []
-        for line in text.splitlines():
-            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)\s+(-?[\d.,]+)", line)
-            if m:
-                date, desc, amt, bal = m.groups()
-                amt = float(amt.replace('.', '').replace(',', '.'))
-                bal = float(bal.replace('.', '').replace(',', '.'))
-                txns.append(Transaction(date, desc.strip(), amt, bal))
-        return txns
-
-# File: parsers/generic_parser.py
-import re
-from models import Transaction
-
-class GenericParser:
-    def extract_transactions(self, text: str):
-        txns = []
-        for line in text.splitlines():
-            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
-            if m:
-                date, desc, amt = m.groups()
-                amt = float(amt.replace('.', '').replace(',', '.'))
-                txns.append(Transaction(date, desc.strip(), amt, None))
-        return txns
-
-# File: extract_pipeline.py
-from pdfminer.high_level import extract_text
-from detect_pdf_type import detect_pdf_type
-from models import PdfType
-from parsers.isbank_parser import IsbankParser
-from parsers.qnb_parser import QnbParser
-from parsers.garanti_parser import GarantiParser
-from parsers.yapikredi_parser import YapiKrediParser
-
-PARSERS = {
-    PdfType.CREDIT_CARD_ISBANK: IsbankParser(),
-    PdfType.CREDIT_CARD_QNB:     QnbParser(),
-    PdfType.CREDIT_CARD_GARANTI: GarantiParser(),
-    PdfType.ACCOUNT_YAPIKREDI:   YapiKrediParser(),
+# 4) Turkish month-name dates, e.g. "10 Kasım 2024 … 180,00+"
+MONTHS = {
+    "Ocak":1, "Şubat":2, "Mart":3, "Nisan":4, "Mayıs":5, "Haziran":6,
+    "Temmuz":7, "Ağustos":8, "Eylül":9, "Ekim":10, "Kasım":11, "Aralık":12
 }
+_month_names = "|".join(MONTHS.keys())
+TEXT_DATE_RE = re.compile(
+    rf'^\s*(\d{{1,2}})\s+({_month_names})\s+(\d{{4}})\s+(.+?)\s+'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\+?\s*$'
+)
 
-def extract_from_pdf(pdf_path: str):
-    text = extract_text(pdf_path)
-    pdf_type = detect_pdf_type(text)
-    parser = PARSERS.get(pdf_type)
-    if not parser:
-        from parsers.generic_parser import GenericParser
-        parser = GenericParser()
-    return parser.extract_transactions(text)
+def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(pdf_path) or not os.access(pdf_path, os.R_OK):
+        logger.error(f"Cannot read PDF: {pdf_path}")
+        return []
+
+    results: List[Dict[str, Any]] = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            logger.info(f"Opened PDF with {len(pdf.pages)} pages: {pdf_path}")
+
+            for page_num, page in enumerate(pdf.pages, start=1):
+                raw = page.extract_text() or ""
+                # detect pages that need OCR:
+                needs_ocr = (
+                    not raw.strip() or
+                    raw.count("(cid:") > 5 or
+                    "�" in raw
+                )
+                if needs_ocr:
+                    logger.info(f"Page {page_num}: falling back to OCR")
+                    img = page.to_image(resolution=300).original
+                    raw = pytesseract.image_to_string(img, lang="tur+eng")
+
+                for line in raw.splitlines():
+                    txt = line.strip()
+                    if not txt:
+                        continue
+
+                    # try each pattern
+                    m = ACCOUNT_LINE_RE.match(txt)
+                    if m:
+                        date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
+                    else:
+                        m = CREDIT_TL_RE.match(txt) or CREDIT_MULTI_RE.match(txt)
+                        if m:
+                            date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
+                        else:
+                            m2 = TEXT_DATE_RE.match(txt)
+                            if not m2:
+                                continue
+                            # Turkish month-name match
+                            day, mon, yr, desc, amt_str = (
+                                m2.group(1), m2.group(2), m2.group(3),
+                                m2.group(4), m2.group(5)
+                            )
+                            dt = datetime(int(yr), MONTHS[mon], int(day))
+                            date_str = dt.strftime("%Y-%m-%d")
+
+                    # normalize DD/MM/YYYY → YYYY-MM-DD
+                    if "/" in date_str:
+                        try:
+                            dt = datetime.strptime(date_str, "%d/%m/%Y")
+                            date_str = dt.strftime("%Y-%m-%d")
+                        except ValueError:
+                            pass
+
+                    amt_str = amt_str.rstrip("+")
+                    amount = float(amt_str.replace(".", "").replace(",", "."))
+
+                    results.append({
+                        "date":        date_str,
+                        "description": desc.strip(),
+                        "amount":      amount,
+                        "currency":    DEFAULT_CURRENCY,
+                        "confidence":  0.8
+                    })
+
+        logger.info(f"Extracted {len(results)} transactions from {pdf_path}")
+        return results
+
+    except Exception as e:
+        logger.exception(f"Error extracting transactions from {pdf_path}: {e}")
+        return []
