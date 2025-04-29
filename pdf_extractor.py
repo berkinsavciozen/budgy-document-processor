@@ -1,76 +1,134 @@
-```python
-# unified parser by PDF layout type, not by bank
+# File: models.py
+from enum import Enum, auto
+from dataclasses import dataclass
+
+class PdfType(Enum):
+    CREDIT_CARD_ISBANK = auto()
+    CREDIT_CARD_QNB = auto()
+    CREDIT_CARD_GARANTI = auto()
+    ACCOUNT_YAPIKREDI = auto()
+    UNKNOWN = auto()
+
+@dataclass
+class Transaction:
+    date: str
+    description: str
+    amount: float
+    balance: float = None
+
+# File: detect_pdf_type.py
+from models import PdfType
+
+def detect_pdf_type(text: str) -> PdfType:
+    if "Maximum Visa Dijital" in text:
+        return PdfType.CREDIT_CARD_ISBANK
+    if "Ekstre tarihi" in text and "QNB Bank" in text:
+        return PdfType.CREDIT_CARD_QNB
+    if "T. Garanti Bankası" in text or "Bonus Trink" in text:
+        return PdfType.CREDIT_CARD_GARANTI
+    if "Hesap Numarası" in text and "IBAN:" in text:
+        return PdfType.ACCOUNT_YAPIKREDI
+    return PdfType.UNKNOWN
+
+# File: parsers/isbank_parser.py
 import re
-from io import BytesIO
-import pdfplumber
+from models import Transaction
 
-# generic table extraction by detecting transaction blocks
-def extract_transactions_from_layout(lines, date_pattern):
-    txns = []
-    buffer = []
-    for line in lines:
-        # accumulate lines until next date
-        parts = re.split(r"\s{2,}", line.strip())
-        if re.match(date_pattern, parts[0]):
-            if buffer:
-                txns.append(buffer)
-            buffer = [parts]
-        else:
-            if buffer:
-                buffer.append(parts)
-    if buffer:
-        txns.append(buffer)
-    # flatten and normalize
-    parsed = []
-    for group in txns:
-        date = group[0][0]
-        desc = ' '.join([g[1] for g in group if len(g)>1])
-        amt = group[0][-2] if len(group[0])>2 else ''
-        bal = group[0][-1] if len(group[0])>3 else ''
-        parsed.append({'date':date, 'description':desc, 'amount':amt, 'balance':bal})
-    return parsed
+class IsbankParser:
+    def extract_transactions(self, text: str):
+        txns = []
+        for line in text.splitlines():
+            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)\s+(-?[\d.,]+)", line)
+            if m:
+                date, desc, amt, bal = m.groups()
+                amt = float(amt.replace('.', '').replace(',', '.'))
+                bal = float(bal.replace('.', '').replace(',', '.'))
+                txns.append(Transaction(date, desc.strip(), amt, bal))
+        return txns
 
-# detect layout type
-LAYOUTS = [
-    {
-        'name':'creditcard',
-        'marker':'Hesap Özeti',
-        'date_pattern':r"\d{2}/\d{2}/\d{4}",
-    },
-    {
-        'name':'account',
-        'marker':'Hesap Numarası',
-        'date_pattern':r"\d{2}/\d{2}/\d{4}",
-    }
-]
+# File: parsers/qnb_parser.py
+import re
+from models import Transaction
 
-def parse_pdf(pdf_bytes):
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        text = pdf.pages[0].extract_text()
-        for layout in LAYOUTS:
-            if layout['marker'] in text:
-                # extract all lines after header
-                lines = []
-                for page in pdf.pages:
-                    txt = page.extract_text().splitlines()
-                    lines += txt
-                # find start of transactions table
-                start = next((i for i,l in enumerate(lines) if re.match(layout['date_pattern'], l)), None)
-                if start is None:
-                    raise ValueError('No transactions found')
-                tx_lines = lines[start:]
-                return extract_transactions_from_layout(tx_lines, layout['date_pattern'])
-    raise ValueError('Unknown PDF type')
+class QnbParser:
+    def extract_transactions(self, text: str):
+        txns = []
+        for line in text.splitlines():
+            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
+            if m:
+                date, desc, amt = m.groups()
+                amt = float(amt.replace('.', '').replace(',', '.'))
+                txns.append(Transaction(date, desc.strip(), amt, None))
+        return txns
 
-# entry point
-def parse_credit_card(path):
-    with open(path, 'rb') as f:
-        data = f.read()
-    return parse_pdf(data)
+# File: parsers/garanti_parser.py
+import re
+from models import Transaction
 
-if __name__ == '__main__':
-    import sys
-    path = sys.argv[1]
-    for txn in parse_credit_card(path):
-        print(txn)
-```
+class GarantiParser:
+    def extract_transactions(self, text: str):
+        txns = []
+        for line in text.splitlines():
+            m = re.search(r"(\d{2} \w+ \d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
+            if m:
+                date, desc, amt = m.groups()
+                # parse date e.g. '10 Kasım 2024' into DD/MM/YYYY if needed
+                amt = float(amt.replace('.', '').replace(',', '.'))
+                txns.append(Transaction(date, desc.strip(), amt, None))
+        return txns
+
+# File: parsers/yapikredi_parser.py
+import re
+from models import Transaction
+
+class YapiKrediParser:
+    def extract_transactions(self, text: str):
+        txns = []
+        for line in text.splitlines():
+            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)\s+(-?[\d.,]+)", line)
+            if m:
+                date, desc, amt, bal = m.groups()
+                amt = float(amt.replace('.', '').replace(',', '.'))
+                bal = float(bal.replace('.', '').replace(',', '.'))
+                txns.append(Transaction(date, desc.strip(), amt, bal))
+        return txns
+
+# File: parsers/generic_parser.py
+import re
+from models import Transaction
+
+class GenericParser:
+    def extract_transactions(self, text: str):
+        txns = []
+        for line in text.splitlines():
+            m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d.,]+)", line)
+            if m:
+                date, desc, amt = m.groups()
+                amt = float(amt.replace('.', '').replace(',', '.'))
+                txns.append(Transaction(date, desc.strip(), amt, None))
+        return txns
+
+# File: extract_pipeline.py
+from pdfminer.high_level import extract_text
+from detect_pdf_type import detect_pdf_type
+from models import PdfType
+from parsers.isbank_parser import IsbankParser
+from parsers.qnb_parser import QnbParser
+from parsers.garanti_parser import GarantiParser
+from parsers.yapikredi_parser import YapiKrediParser
+
+PARSERS = {
+    PdfType.CREDIT_CARD_ISBANK: IsbankParser(),
+    PdfType.CREDIT_CARD_QNB:     QnbParser(),
+    PdfType.CREDIT_CARD_GARANTI: GarantiParser(),
+    PdfType.ACCOUNT_YAPIKREDI:   YapiKrediParser(),
+}
+
+def extract_from_pdf(pdf_path: str):
+    text = extract_text(pdf_path)
+    pdf_type = detect_pdf_type(text)
+    parser = PARSERS.get(pdf_type)
+    if not parser:
+        from parsers.generic_parser import GenericParser
+        parser = GenericParser()
+    return parser.extract_transactions(text)
