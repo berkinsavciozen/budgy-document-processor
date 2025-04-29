@@ -18,23 +18,28 @@ logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 # Default currency code (e.g. "TRY", "USD", etc.)
 DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "TRY")
 
-# 1) Bank-statement lines (amount + balance):
-#    1 02/07/2024 DESC… -696,44    -10.221,81
+# 1) Bank statements: row #, date, desc, amount, balance
 ACCOUNT_LINE_RE = re.compile(
-    r'^\s*\d+\s+'                             # row no.
-    r'(\d{2}/\d{2}/\d{4})\s+'                 # date DD/MM/YYYY
-    r'(.+?)\s+'                               # description (non-greedy)
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+'       # amount
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'      # balance (ignored)
+    r'^\s*\d+\s+'                              # row number
+    r'(\d{2}/\d{2}/\d{4})\s+'                  # date DD/MM/YYYY
+    r'(.+?)\s+'                                # description
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+'        # amount
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'       # balance (ignored)
 )
 
-# 2) Credit-card lines (amount + installment + maxipuan):
-#    15/08/2024 DESC…  519,50 0,05
-CREDIT_LINE_RE = re.compile(
-    r'^\s*(\d{2}/\d{2}/\d{4})\s*'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
-    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+'
+# 2) Credit‐card lines ending in "TL"
+CREDIT_TL_RE = re.compile(
+    r'^\s*(\d{2}/\d{2}/\d{4})\s+'               # date
+    r'(.+?)\s+'                                # description
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\s*$'   # amount + "TL"
+)
+
+# 3) Credit‐card lines with multiple trailing numeric columns
+CREDIT_MULTI_RE = re.compile(
+    r'^\s*(\d{2}/\d{2}/\d{4})\s*'               # date
+    r'(.+?)\s+'                                # description
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'           # amount
+    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+'    # one or more extra numeric columns
     r'\s*$'
 )
 
@@ -58,9 +63,9 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
         with pdfplumber.open(pdf_path) as pdf:
             logger.info(f"Opened PDF with {len(pdf.pages)} pages")
             for page_num, page in enumerate(pdf.pages, start=1):
-                # First try native text
+                # 1) Native text
                 raw_text = page.extract_text() or ""
-                # If garbage (CID markers), fallback to OCR
+                # 2) Fallback to OCR if empty or heavy CID garbage
                 if not raw_text.strip() or raw_text.count("(cid:") > 5:
                     logger.info(f"Page {page_num}: falling back to OCR")
                     pil_img = page.to_image(resolution=300).original
@@ -68,7 +73,11 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
 
                 for line in raw_text.splitlines():
                     text = line.strip()
-                    m = ACCOUNT_LINE_RE.match(text) or CREDIT_LINE_RE.match(text)
+                    m = (
+                        ACCOUNT_LINE_RE.match(text)
+                        or CREDIT_TL_RE.match(text)
+                        or CREDIT_MULTI_RE.match(text)
+                    )
                     if not m:
                         continue
 
@@ -86,7 +95,7 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
 
                     results.append({
                         "date":        date_out,
-                        "description": desc,
+                        "description": desc.strip(),
                         "amount":      amount,
                         "currency":    DEFAULT_CURRENCY,
                         "confidence":  0.8
