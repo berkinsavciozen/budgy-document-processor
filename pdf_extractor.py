@@ -1,4 +1,3 @@
-
 """
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs (bank & credit-card statements)
@@ -12,6 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 import pdfplumber
+import fitz  # PyMuPDF for rendering pages to images for OCR fallback
 from PIL import Image
 import pytesseract
 
@@ -40,7 +40,7 @@ CREDIT_MULTI_RE = re.compile(
     r'^\s*(\d{2}/\d{2}/\d{4})\s*'
     r'(.+?)\s+'
     r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
-    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+\s*$'
+    r'(?:\s+[0-9]{1,3}(?:\.[0-9]{3})*,\d{2})+\s*$'
 )
 
 # 4) Turkish month-name dates, e.g. "10 Kasım 2024 … 180,00+"
@@ -55,13 +55,18 @@ TEXT_DATE_RE = re.compile(
 )
 
 def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
+    """
+    Extract a list of transactions from a PDF file.
+    Returns list of dicts: {date, description, amount, currency, confidence}
+    """
     if not os.path.exists(pdf_path) or not os.access(pdf_path, os.R_OK):
         logger.error(f"Cannot read PDF: {pdf_path}")
         return []
 
     results: List[Dict[str, Any]] = []
     try:
-        with pdfplumber.open(pdf_path) as pdf:
+        # Open both pdfplumber and PyMuPDF for robust OCR fallback
+        with pdfplumber.open(pdf_path) as pdf, fitz.open(pdf_path) as doc_fitz:
             logger.info(f"Opened PDF with {len(pdf.pages)} pages: {pdf_path}")
 
             for page_num, page in enumerate(pdf.pages, start=1):
@@ -73,28 +78,35 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                     "�" in raw
                 )
                 if needs_ocr:
-                    logger.info(f"Page {page_num}: falling back to OCR")
-                    img = page.to_image(resolution=300).original
-                    raw = pytesseract.image_to_string(img, lang="tur+eng")
+                    logger.info(f"Page {page_num}: falling back to OCR using PyMuPDF rendering")
+                    try:
+                        # Render page to image via PyMuPDF
+                        pix = doc_fitz.load_page(page_num - 1).get_pixmap(dpi=300)
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        raw = pytesseract.image_to_string(img, lang="tur+eng")
+                    except Exception as e:
+                        logger.warning(f"Page {page_num}: OCR fallback failed ({e}), using extracted text")
 
+                # process lines
                 for line in raw.splitlines():
                     txt = line.strip()
                     if not txt:
                         continue
 
-                    # try each pattern
+                    # try bank statement pattern
                     m = ACCOUNT_LINE_RE.match(txt)
                     if m:
                         date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
                     else:
+                        # try credit card TL or multi patterns
                         m = CREDIT_TL_RE.match(txt) or CREDIT_MULTI_RE.match(txt)
                         if m:
                             date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
                         else:
+                            # try Turkish month-name dates
                             m2 = TEXT_DATE_RE.match(txt)
                             if not m2:
                                 continue
-                            # Turkish month-name match
                             day, mon, yr, desc, amt_str = (
                                 m2.group(1), m2.group(2), m2.group(3),
                                 m2.group(4), m2.group(5)
@@ -102,7 +114,7 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                             dt = datetime(int(yr), MONTHS[mon], int(day))
                             date_str = dt.strftime("%Y-%m-%d")
 
-                    # normalize DD/MM/YYYY → YYYY-MM-DD
+                    # normalize date format DD/MM/YYYY → YYYY-MM-DD
                     if "/" in date_str:
                         try:
                             dt = datetime.strptime(date_str, "%d/%m/%Y")
@@ -111,7 +123,11 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                             pass
 
                     amt_str = amt_str.rstrip("+")
-                    amount = float(amt_str.replace(".", "").replace(",", "."))
+                    try:
+                        amount = float(amt_str.replace(".", "").replace(",", "."))
+                    except ValueError:
+                        logger.debug(f"Skipping unparsable amount: {amt_str}")
+                        continue
 
                     results.append({
                         "date":        date_str,
