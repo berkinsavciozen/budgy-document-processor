@@ -1,8 +1,6 @@
 """
 PDF Transaction Extractor Module
-Extracts transaction data from financial PDFs (bank & credit-card statements)
-with an OCR fallback for empty/CID-encoded/garbled pages, plus support for
-Turkish month-name dates and Akbank’s “+”-suffix on TL amounts.
+Extracts transaction data from financial PDFs, including account statements and credit-card statements.
 """
 import logging
 import re
@@ -11,130 +9,145 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 import pdfplumber
-from PIL import Image
 import pytesseract
 
 logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
-DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "TRY")
+# ----------------------------------------------------------------------------------------------------------------------
+# PATTERNS
+# ----------------------------------------------------------------------------------------------------------------------
 
-# 1) Bank statements: row#, DD/MM/YYYY, desc, amount, balance
+# 1) Tabular account statements (e.g. YPK_Account_July) – date MM/DD/YYYY or DD/MM/YYYY, description, amount, balance
 ACCOUNT_LINE_RE = re.compile(
-    r'^\s*\d+\s+'
-    r'(\d{2}/\d{2}/\d{4})\s+'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'
+    r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})'
 )
 
-# 2) Credit cards ending in “TL”, with optional “+”
-CREDIT_TL_RE = re.compile(
-    r'^\s*(\d{2}/\d{2}/\d{4})\s+'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\+?\s*$'
+# 2) Amount pattern for credit-card style lines; matches e.g. “1.039,00 TL”, “246,00+”, “-25.794,95”
+AMOUNT_PATTERN = re.compile(r'(-?\d{1,3}(?:\.\d{3})*,\d{2})(?:\s*TL)?\+?')
+
+# 3) Date pattern: either numeric DD/MM/YYYY or Turkish “10 Kasım 2024”
+DATE_PATTERN = re.compile(
+    r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|' +
+    r'\d{1,2}\s+(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4})',
+    flags=re.IGNORECASE
 )
 
-# 3) Credit cards with multiple trailing numeric columns, allow trailing “+”
-CREDIT_MULTI_RE = re.compile(
-    r'^\s*(\d{2}/\d{2}/\d{4})\s*'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
-    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+\+?\s*$'
-)
-
-# 4) Turkish month-name dates, e.g. "10 Kasım 2024 … 180,00+"
-MONTHS = {
-    "Ocak":1, "Şubat":2, "Mart":3, "Nisan":4, "Mayıs":5, "Haziran":6,
-    "Temmuz":7, "Ağustos":8, "Eylül":9, "Ekim":10, "Kasım":11, "Aralık":12
+# Map Turkish month names to month numbers
+MONTH_MAP = {
+    'ocak': '01', 'şubat': '02', 'mart': '03', 'nisan': '04',
+    'mayıs': '05', 'haziran': '06', 'temmuz': '07', 'ağustos': '08',
+    'eylül': '09', 'ekim': '10', 'kasım': '11', 'aralık': '12'
 }
-_month_names = "|".join(MONTHS.keys())
-TEXT_DATE_RE = re.compile(
-    rf'^\s*(\d{{1,2}})\s+({_month_names})\s+(\d{{4}})\s+(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\+?\s*$'
-)
+
 
 def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
-    if not os.path.exists(pdf_path) or not os.access(pdf_path, os.R_OK):
-        logger.error(f"Cannot read PDF: {pdf_path}")
+    """
+    Extract transactions from a PDF file (both tabular account statements and
+    free-form credit-card statements).
+    """
+    logger.info(f"Extracting transactions from PDF: {pdf_path}")
+
+    if not os.path.exists(pdf_path):
+        logger.error(f"PDF file not found: {pdf_path}")
+        return []
+    if not os.access(pdf_path, os.R_OK):
+        logger.error(f"PDF file not readable: {pdf_path}")
         return []
 
-    results: List[Dict[str, Any]] = []
+    transactions: List[Dict[str, Any]] = []
+
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            logger.info(f"Opened PDF with {len(pdf.pages)} pages: {pdf_path}")
+            logger.info(f"Opened PDF with {len(pdf.pages)} pages")
 
             for page_num, page in enumerate(pdf.pages, start=1):
-                raw = page.extract_text() or ""
-                # detect pages that need OCR:
-                needs_ocr = (
-                    not raw.strip()
-                    or raw.count("(cid:") > 5
-                    or "�" in raw
-                )
-                if needs_ocr:
-                    logger.info(f"Page {page_num}: falling back to OCR")
-                    img = page.to_image(resolution=300).original
-                    raw = pytesseract.image_to_string(img, lang="tur+eng")
+                logger.info(f"Processing page {page_num}")
+                text = page.extract_text() or ""
+                page_transactions = []
 
-                for line in raw.splitlines():
-                    txt = line.strip()
-                    if not txt:
+                # --- 1) First attempt: structured, tabular statements ---
+                lines = text.split('\n')
+                for line in lines:
+                    m = ACCOUNT_LINE_RE.search(line)
+                    if not m:
                         continue
 
-                    date_str = desc = amt_str = None
-
-                    # try bank-style line
-                    m = ACCOUNT_LINE_RE.match(txt)
-                    if m:
-                        date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
-                    else:
-                        # try simple TL-terminated credit
-                        m = CREDIT_TL_RE.match(txt)
-                        if m:
-                            date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
-                        else:
-                            # try multi-column credit
-                            m = CREDIT_MULTI_RE.match(txt)
-                            if m:
-                                date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
-                            else:
-                                # try Turkish-month names
-                                m2 = TEXT_DATE_RE.match(txt)
-                                if m2:
-                                    day, mon, yr, desc, amt_str = (
-                                        m2.group(1), m2.group(2), m2.group(3),
-                                        m2.group(4), m2.group(5)
-                                    )
-                                    dt = datetime(int(yr), MONTHS[mon], int(day))
-                                    date_str = dt.strftime("%Y-%m-%d")
-
-                    if not (date_str and desc and amt_str):
-                        continue
-
-                    # normalize DD/MM/YYYY → YYYY-MM-DD
-                    if "/" in date_str:
+                    date_str, desc, amt_str, _ = m.groups()
+                    # parse date
+                    for fmt in ('%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%Y-%m-%d'):
                         try:
-                            dt = datetime.strptime(date_str, "%d/%m/%Y")
-                            date_str = dt.strftime("%Y-%m-%d")
+                            dt = datetime.strptime(date_str, fmt)
+                            break
                         except ValueError:
-                            pass
+                            dt = None
+                    formatted_date = dt.strftime('%Y-%m-%d') if dt else date_str
 
-                    # strip any lingering “+”
-                    amt_str = amt_str.rstrip("+")
-                    # convert Turkish-style number to float
-                    amount = float(amt_str.replace(".", "").replace(",", "."))
-
-                    results.append({
-                        "date":        date_str,
+                    # normalize amount
+                    amount = amt_str.replace('.', '').replace(',', '.')
+                    page_transactions.append({
+                        "date": formatted_date,
                         "description": desc.strip(),
-                        "amount":      amount,
-                        "currency":    DEFAULT_CURRENCY,
-                        "confidence":  0.8
+                        "amount": amount,
+                        "confidence": 0.9
                     })
 
-        logger.info(f"Extracted {len(results)} transactions from {pdf_path}")
-        return results
+                # --- 2) If nothing found in tabular form, fallback to OCR + free-form parsing ---
+                if not page_transactions:
+                    logger.info("No tabular transactions found, falling back to OCR on page")
+                    img = page.to_image(resolution=300).original
+                    ocr_text = pytesseract.image_to_string(img, lang='tur')
+                    for line in ocr_text.split('\n'):
+                        if not line.strip():
+                            continue
+
+                        # find date
+                        dm = DATE_PATTERN.search(line)
+                        if not dm:
+                            continue
+                        date_str = dm.group(0).strip()
+
+                        # find amount
+                        am = AMOUNT_PATTERN.search(line)
+                        if not am:
+                            continue
+                        amt_str = am.group(1)
+
+                        # parse date: numeric or Turkish month
+                        if '/' in date_str or '-' in date_str:
+                            for fmt in ('%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%Y-%m-%d'):
+                                try:
+                                    dt = datetime.strptime(date_str, fmt)
+                                    break
+                                except ValueError:
+                                    dt = None
+                        else:
+                            parts = date_str.split()
+                            day, mon_name, year = parts
+                            mon_num = MONTH_MAP.get(mon_name.lower(), '01')
+                            dt = datetime(int(year), int(mon_num), int(day))
+                        formatted_date = dt.strftime('%Y-%m-%d') if dt else date_str
+
+                        # normalize amount to decimal string
+                        amount = amt_str.replace('.', '').replace(',', '.')
+
+                        # extract description by removing date and amount from the line
+                        desc = line
+                        desc = desc.replace(date_str, '').strip()
+                        desc = AMOUNT_PATTERN.sub('', desc).strip().rstrip('+')
+
+                        page_transactions.append({
+                            "date": formatted_date,
+                            "description": desc,
+                            "amount": amount,
+                            "confidence": 0.8
+                        })
+
+                logger.info(f"Found {len(page_transactions)} transactions on page {page_num}")
+                transactions.extend(page_transactions)
+
+        logger.info(f"Total extracted transactions: {len(transactions)}")
+        return transactions
 
     except Exception as e:
-        logger.exception(f"Error extracting transactions from {pdf_path}: {e}")
+        logger.exception(f"Error extracting transactions from PDF: {e}")
         return []
