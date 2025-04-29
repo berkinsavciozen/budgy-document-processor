@@ -13,6 +13,8 @@ services:
         value: "1"
       - key: DEBUG_MODE
         value: "true"
+      - key: DEFAULT_CURRENCY
+        value: "TRY"
       - key: ENABLE_ADVANCED_EXTRACTION
         value: "true"
       - key: MAX_FILE_SIZE
