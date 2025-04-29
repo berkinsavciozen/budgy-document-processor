@@ -14,3 +14,4 @@ pypdf==3.15.1
 pytesseract==0.3.10
 python-magic==0.4.27
 aiofiles==23.1.0
+PyMuPDF>=1.21.0
