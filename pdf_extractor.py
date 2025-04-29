@@ -2,7 +2,7 @@
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs (bank & credit-card statements)
 with an OCR fallback for empty/CID-encoded/garbled pages, plus support for
-Turkish month-name dates.
+Turkish month-name dates and Akbank’s “+”-suffix on TL amounts.
 """
 import logging
 import re
@@ -27,19 +27,19 @@ ACCOUNT_LINE_RE = re.compile(
     r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'
 )
 
-# 2) Credit cards ending in “TL”
+# 2) Credit cards ending in “TL”, with optional “+”
 CREDIT_TL_RE = re.compile(
     r'^\s*(\d{2}/\d{2}/\d{4})\s+'
     r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\s*$'
+    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\+?\s*$'
 )
 
-# 3) Credit cards with multiple trailing numeric columns
+# 3) Credit cards with multiple trailing numeric columns, allow trailing “+”
 CREDIT_MULTI_RE = re.compile(
     r'^\s*(\d{2}/\d{2}/\d{4})\s*'
     r'(.+?)\s+'
     r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
-    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+\s*$'
+    r'(?:\s+[0-9]{1,3}(?:\.\d{3})*,\d{2})+\+?\s*$'
 )
 
 # 4) Turkish month-name dates, e.g. "10 Kasım 2024 … 180,00+"
@@ -67,9 +67,9 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                 raw = page.extract_text() or ""
                 # detect pages that need OCR:
                 needs_ocr = (
-                    not raw.strip() or
-                    raw.count("(cid:") > 5 or
-                    "�" in raw
+                    not raw.strip()
+                    or raw.count("(cid:") > 5
+                    or "�" in raw
                 )
                 if needs_ocr:
                     logger.info(f"Page {page_num}: falling back to OCR")
@@ -81,25 +81,35 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                     if not txt:
                         continue
 
-                    # try each pattern
+                    date_str = desc = amt_str = None
+
+                    # try bank-style line
                     m = ACCOUNT_LINE_RE.match(txt)
                     if m:
                         date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
                     else:
-                        m = CREDIT_TL_RE.match(txt) or CREDIT_MULTI_RE.match(txt)
+                        # try simple TL-terminated credit
+                        m = CREDIT_TL_RE.match(txt)
                         if m:
                             date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
                         else:
-                            m2 = TEXT_DATE_RE.match(txt)
-                            if not m2:
-                                continue
-                            # Turkish month-name match
-                            day, mon, yr, desc, amt_str = (
-                                m2.group(1), m2.group(2), m2.group(3),
-                                m2.group(4), m2.group(5)
-                            )
-                            dt = datetime(int(yr), MONTHS[mon], int(day))
-                            date_str = dt.strftime("%Y-%m-%d")
+                            # try multi-column credit
+                            m = CREDIT_MULTI_RE.match(txt)
+                            if m:
+                                date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
+                            else:
+                                # try Turkish-month names
+                                m2 = TEXT_DATE_RE.match(txt)
+                                if m2:
+                                    day, mon, yr, desc, amt_str = (
+                                        m2.group(1), m2.group(2), m2.group(3),
+                                        m2.group(4), m2.group(5)
+                                    )
+                                    dt = datetime(int(yr), MONTHS[mon], int(day))
+                                    date_str = dt.strftime("%Y-%m-%d")
+
+                    if not (date_str and desc and amt_str):
+                        continue
 
                     # normalize DD/MM/YYYY → YYYY-MM-DD
                     if "/" in date_str:
@@ -109,7 +119,9 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                         except ValueError:
                             pass
 
+                    # strip any lingering “+”
                     amt_str = amt_str.rstrip("+")
+                    # convert Turkish-style number to float
                     amount = float(amt_str.replace(".", "").replace(",", "."))
 
                     results.append({
