@@ -125,6 +125,22 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                     amt_str = amt_str.rstrip("+")
                     try:
                         amount = float(amt_str.replace(".", "").replace(",", "."))
+                        # handle negative signs or parentheses for expenses
+                        amt_clean = amt_str.strip()
+                        is_negative = False
+                        # e.g. “(1.234,56)” → expense
+                        if amt_clean.startswith("(") and amt_clean.endswith(")"):
+                            is_negative = True
+                            amt_clean = amt_clean[1:-1]
+                            # e.g. “-1.234,56” → expense
+                        elif amt_clean.startswith("-"):
+                            is_negative = True
+                            amt_clean = amt_clean[1:]
+                            # normalize thousand and decimal separators
+                            amt_clean = amt_clean.replace(".", "").replace(",", ".")
+                            amount = float(amt_clean)
+                        if is_negative:
+                            amount = -amount
                     except ValueError:
                         logger.debug(f"Skipping unparsable amount: {amt_str}")
                         continue
