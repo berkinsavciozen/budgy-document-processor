@@ -1,3 +1,4 @@
+
 import os
 import time
 import logging
@@ -153,6 +154,16 @@ async def process_pdf(
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
 # --- CORS fix for /confirm-transactions ---
+def _cors_headers():
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "86400",
+        "Access-Control-Expose-Headers": "Content-Type, Authorization"
+    }
+
 @app.options("/confirm-transactions")
 async def options_confirm_transactions(request: Request):
     """Respond to CORS preflight with correct headers for POST"""
@@ -162,17 +173,18 @@ async def options_confirm_transactions(request: Request):
 async def confirm_transactions(request: ConfirmTransactionsRequest):
     """
     Confirm and save transactions to the database
-    
+
     Args:
         request: Request containing file_path and transactions list
-        
+
     Returns:
         JSON response indicating success or failure
     """
     headers = _cors_headers()
     try:
+        # Log the request (for debug)
         logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
-        
+
         # Validate transactions
         if not request.transactions:
             return JSONResponse(
@@ -180,12 +192,11 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 content={"success": False, "error": "No transactions provided"},
                 headers=headers
             )
-        
         # Here you would typically save to your main database
         # For now, we'll just log and return success
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -195,13 +206,14 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
             },
             headers=headers
         )
-        
+
     except Exception as e:
         logger.exception(f"Error confirming transactions: {str(e)}")
+        # Always build error response with CORS headers
         return JSONResponse(
             status_code=500,
             content={
-                "success": False, 
+                "success": False,
                 "error": str(e),
                 "message": "Failed to confirm transactions"
             },
