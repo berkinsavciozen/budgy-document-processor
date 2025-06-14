@@ -22,39 +22,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("budgy-document-processor")
 
-# --- GLOBAL CORS HEADERS WORKAROUND ---
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Max-Age": "86400",
-    "Access-Control-Expose-Headers": "Content-Type, Authorization"
-}
-
 app = FastAPI(title="Budgy Document Processor", description="API for processing financial documents")
 
-# Retain CORSMiddleware for completeness (it's fine to be redundant)
+# Configure CORS - Allow all origins for now to fix the immediate issue
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins temporarily
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
-
-# --- GLOBAL MIDDLEWARE TO ENSURE CORS HEADERS ON ANY RESPONSE ---
-@app.middleware("http")
-async def add_cors_to_every_response(request: Request, call_next):
-    try:
-        response = await call_next(request)
-    except Exception as exc:
-        content = {"success": False, "error": str(exc), "message": "Internal server error"}
-        response = JSONResponse(status_code=500, content=content)
-    # Always set CORS headers
-    for k, v in CORS_HEADERS.items():
-        response.headers[k] = v
-    return response
 
 class ProcessingResponse(BaseModel):
     success: bool
@@ -75,7 +53,8 @@ class ConfirmTransactionsRequest(BaseModel):
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "cors_enabled": True
     }
 
 @app.post("/process-pdf", response_model=ProcessingResponse)
@@ -96,7 +75,11 @@ async def process_pdf(
             return JSONResponse(
                 status_code=400,
                 content={"success": False, "error": "Only PDF files are supported"},
-                headers=CORS_HEADERS
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*"
+                }
             )
         
         temp_file_path = f"/tmp/upload_{document_id}.pdf"
@@ -128,7 +111,11 @@ async def process_pdf(
                 "processing_time_ms": processing_time,
                 "message": f"Successfully extracted {num_transactions} transactions"
             },
-            headers=CORS_HEADERS
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
         )
         
     except Exception as e:
@@ -151,7 +138,11 @@ async def process_pdf(
                 "processing_time_ms": processing_time,
                 "message": "Failed to process document"
             },
-            headers=CORS_HEADERS
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
         )
     finally:
         if temp_file_path and os.path.exists(temp_file_path):
@@ -161,15 +152,20 @@ async def process_pdf(
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
-# --- CORS Helper for Explicit Routes ---
-def _cors_headers():
-    return CORS_HEADERS.copy()
-
-# === CORS fix: Explicitly handle OPTIONS for /confirm-transactions ===
+# Explicit OPTIONS handler for confirm-transactions
 @app.options("/confirm-transactions")
-async def options_confirm_transactions(request: Request):
-    headers = _cors_headers()
-    return PlainTextResponse("", status_code=204, headers=headers)
+async def options_confirm_transactions():
+    return PlainTextResponse(
+        "",
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
 
 @app.post("/confirm-transactions")
 async def confirm_transactions(request: ConfirmTransactionsRequest):
@@ -183,13 +179,15 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                     "success": False,
                     "error": "No transactions provided"
                 },
-                headers=CORS_HEADERS
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*"
+                }
             )
 
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
-
-        # You may want to persist transactions here to DB... (not shown as per original code)
 
         return JSONResponse(
             status_code=200,
@@ -198,7 +196,11 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 "message": f"Successfully confirmed {len(request.transactions)} transactions",
                 "transaction_count": len(request.transactions)
             },
-            headers=CORS_HEADERS
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
         )
 
     except Exception as e:
@@ -210,11 +212,14 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 "error": str(e),
                 "message": "Failed to confirm transactions"
             },
-            headers=CORS_HEADERS
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*"
+            }
         )
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-
