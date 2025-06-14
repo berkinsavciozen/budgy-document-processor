@@ -2,7 +2,7 @@
 PDF Transaction Extractor Module
 Extracts transaction data from financial PDFs (bank & credit-card statements)
 with an OCR fallback for empty/CID-encoded/garbled pages, plus support for
-Turkish month-name dates.
+Turkish month-name dates and intelligent expense/income detection.
 """
 import logging
 import re
@@ -28,7 +28,7 @@ ACCOUNT_LINE_RE = re.compile(
     r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'
 )
 
-# 2) Credit cards ending in “TL”
+# 2) Credit cards ending in "TL"
 CREDIT_TL_RE = re.compile(
     r'^\s*(\d{2}/\d{2}/\d{4})\s+'
     r'(.+?)\s+'
@@ -54,10 +54,115 @@ TEXT_DATE_RE = re.compile(
     r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\+?\s*$'
 )
 
+def determine_transaction_type(description: str, amount: float) -> str:
+    """
+    Determine if a transaction is an expense or income based on description and amount
+    
+    Args:
+        description: Transaction description
+        amount: Transaction amount (positive or negative)
+        
+    Returns:
+        str: "Expense" or "Income"
+    """
+    desc_lower = description.lower()
+    
+    # Income keywords (Turkish and English)
+    income_keywords = [
+        'maaş', 'salary', 'wage', 'gelir', 'income', 'deposit', 'havale gelen',
+        'eft gelen', 'transfer gelen', 'faiz', 'interest', 'bonus', 'prim',
+        'iade', 'refund', 'cashback', 'geri ödeme', 'dividend', 'temettü'
+    ]
+    
+    # Expense keywords (Turkish and English)
+    expense_keywords = [
+        'alışveriş', 'shopping', 'market', 'pos', 'atm', 'çekim', 'withdrawal',
+        'ödeme', 'payment', 'fatura', 'bill', 'kira', 'rent', 'yakıt', 'fuel',
+        'benzin', 'petrol', 'restaurant', 'cafe', 'restoran', 'yemek', 'food',
+        'havale giden', 'eft giden', 'transfer giden', 'komisyon', 'commission',
+        'ücret', 'fee', 'masraf', 'expense', 'harcama', 'spend', 'purchase',
+        'satın alma', 'online', 'internet', 'telefon', 'phone', 'elektrik',
+        'electricity', 'su', 'water', 'doğalgaz', 'gas', 'kredi kartı',
+        'credit card', 'taksit', 'installment', 'borç', 'debt', 'loan'
+    ]
+    
+    # Check for income keywords
+    for keyword in income_keywords:
+        if keyword in desc_lower:
+            return "Income"
+    
+    # Check for expense keywords
+    for keyword in expense_keywords:
+        if keyword in desc_lower:
+            return "Expense"
+    
+    # If amount is already negative, likely an expense
+    if amount < 0:
+        return "Expense"
+    
+    # Default: positive amounts are usually income, but could be expenses
+    # Check for common expense patterns even with positive amounts
+    if any(word in desc_lower for word in ['pos', 'market', 'atm', 'alışveriş', 'ödeme']):
+        return "Expense"
+    
+    # Default to income for positive amounts without clear expense indicators
+    return "Income"
+
+def normalize_amount(amount_str: str, transaction_type: str) -> str:
+    """
+    Normalize amount to proper signed string format
+    
+    Args:
+        amount_str: Raw amount string from PDF
+        transaction_type: "Expense" or "Income"
+        
+    Returns:
+        str: Properly signed amount as string (e.g., "-123.45" for expenses, "123.45" for income)
+    """
+    # Clean the amount string
+    clean_amount = amount_str.strip().rstrip('+')
+    
+    # Handle parentheses (usually indicate negative)
+    is_negative = False
+    if clean_amount.startswith('(') and clean_amount.endswith(')'):
+        is_negative = True
+        clean_amount = clean_amount[1:-1]
+    elif clean_amount.startswith('-'):
+        is_negative = True
+        clean_amount = clean_amount[1:]
+    
+    # Convert Turkish format to standard format (1.234,56 -> 1234.56)
+    if ',' in clean_amount and '.' in clean_amount:
+        # Format: 1.234,56
+        clean_amount = clean_amount.replace('.', '').replace(',', '.')
+    elif ',' in clean_amount:
+        # Format: 1234,56
+        clean_amount = clean_amount.replace(',', '.')
+    
+    # Convert to float
+    try:
+        amount_float = float(clean_amount)
+    except ValueError:
+        logger.warning(f"Could not parse amount: {amount_str}")
+        return "0.00"
+    
+    # Apply original sign if detected
+    if is_negative:
+        amount_float = -abs(amount_float)
+    
+    # Apply transaction type logic
+    if transaction_type == "Expense":
+        amount_float = -abs(amount_float)  # Expenses are negative
+    elif transaction_type == "Income":
+        amount_float = abs(amount_float)   # Income is positive
+    
+    # Return as formatted string
+    return f"{amount_float:.2f}"
+
 def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
     """
     Extract a list of transactions from a PDF file.
-    Returns list of dicts: {date, description, amount, currency, confidence}
+    Returns list of dicts: {date, description, amount, currency, confidence, transaction_type}
     """
     if not os.path.exists(pdf_path) or not os.access(pdf_path, os.R_OK):
         logger.error(f"Cannot read PDF: {pdf_path}")
@@ -93,6 +198,10 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                     if not txt:
                         continue
 
+                    date_str = None
+                    desc = None
+                    amt_str = None
+
                     # try bank statement pattern
                     m = ACCOUNT_LINE_RE.match(txt)
                     if m:
@@ -114,6 +223,9 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                             dt = datetime(int(yr), MONTHS[mon], int(day))
                             date_str = dt.strftime("%Y-%m-%d")
 
+                    if not date_str or not desc or not amt_str:
+                        continue
+
                     # normalize date format DD/MM/YYYY → YYYY-MM-DD
                     if "/" in date_str:
                         try:
@@ -122,36 +234,29 @@ def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
                         except ValueError:
                             pass
 
-                    amt_str = amt_str.rstrip("+")
+                    # Parse amount for transaction type determination
                     try:
-                        amount = float(amt_str.replace(".", "").replace(",", "."))
-                        # handle negative signs or parentheses for expenses
-                        amt_clean = amt_str.strip()
-                        is_negative = False
-                        # e.g. “(1.234,56)” → expense
-                        if amt_clean.startswith("(") and amt_clean.endswith(")"):
-                            is_negative = True
-                            amt_clean = amt_clean[1:-1]
-                            # e.g. “-1.234,56” → expense
-                        elif amt_clean.startswith("-"):
-                            is_negative = True
-                            amt_clean = amt_clean[1:]
-                            # normalize thousand and decimal separators
-                            amt_clean = amt_clean.replace(".", "").replace(",", ".")
-                            amount = float(amt_clean)
-                        if is_negative:
-                            amount = -amount
+                        # Quick parse for type determination
+                        temp_amount = float(amt_str.replace(".", "").replace(",", ".").rstrip("+"))
+                        transaction_type = determine_transaction_type(desc, temp_amount)
+                        
+                        # Normalize amount with proper sign
+                        normalized_amount = normalize_amount(amt_str, transaction_type)
+                        
+                        results.append({
+                            "date": date_str,
+                            "description": desc.strip(),
+                            "amount": normalized_amount,  # Now a properly signed string
+                            "currency": DEFAULT_CURRENCY,
+                            "confidence": 0.8,
+                            "transaction_type": transaction_type
+                        })
+                        
+                        logger.debug(f"Extracted: {date_str} | {desc[:30]}... | {normalized_amount} | {transaction_type}")
+                        
                     except ValueError:
                         logger.debug(f"Skipping unparsable amount: {amt_str}")
                         continue
-
-                    results.append({
-                        "date":        date_str,
-                        "description": desc.strip(),
-                        "amount":      amount,
-                        "currency":    DEFAULT_CURRENCY,
-                        "confidence":  0.8
-                    })
 
         logger.info(f"Extracted {len(results)} transactions from {pdf_path}")
         return results
