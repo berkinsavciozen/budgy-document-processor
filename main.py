@@ -1,4 +1,3 @@
-
 import os
 import time
 import logging
@@ -169,6 +168,13 @@ async def options_confirm_transactions():
 
 @app.post("/confirm-transactions")
 async def confirm_transactions(request: ConfirmTransactionsRequest):
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "86400"
+    }
     try:
         logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
 
@@ -179,11 +185,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                     "success": False,
                     "error": "No transactions provided"
                 },
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "*"
-                }
+                headers=cors_headers
             )
 
         for i, tx in enumerate(request.transactions):
@@ -196,11 +198,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 "message": f"Successfully confirmed {len(request.transactions)} transactions",
                 "transaction_count": len(request.transactions)
             },
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
+            headers=cors_headers
         )
 
     except Exception as e:
@@ -212,11 +210,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 "error": str(e),
                 "message": "Failed to confirm transactions"
             },
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            }
+            headers=cors_headers
         )
 
 if __name__ == "__main__":
