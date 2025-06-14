@@ -1,4 +1,3 @@
-
 import os
 import time
 import requests
@@ -106,8 +105,13 @@ def update_document_record(document_id: str, status: str, transactions: List[Dic
     # Prepare payload with processed data
     payload = {
         "status": status,
-        "processed_data": transactions,  # Store as JSON directly
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        "processed_data": {
+            "candidate_transactions": transactions,
+            "extraction_method": "automatic",
+            "extraction_quality": "high" if len(transactions) > 0 else "low",
+            "transaction_count": len(transactions)
+        },
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     }
     
     try:
@@ -128,6 +132,60 @@ def update_document_record(document_id: str, status: str, transactions: List[Dic
             
     except Exception as e:
         logger.error(f"Error updating document {document_id}: {str(e)}")
+        return False
+
+def save_transactions_to_db(transactions: List[Dict[str, Any]], file_path: str) -> bool:
+    """Save transactions to the main transactions table
+    
+    Args:
+        transactions: List of transaction dictionaries
+        file_path: File path for reference
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Get Supabase credentials
+    supabase_url = os.getenv("SUPABASE_URL", "https://njjfycredoojnauidutp.supabase.co")
+    supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    
+    if not supabase_url or not supabase_service_key:
+        logger.error("Supabase credentials not found")
+        return False
+    
+    # Prepare the API request
+    url = f"{supabase_url}/rest/v1/transactions"
+    headers = {
+        "apikey": supabase_service_key,
+        "Authorization": f"Bearer {supabase_service_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # Prepare transactions for insertion
+    prepared_transactions = []
+    for tx in transactions:
+        prepared_tx = {
+            "date": tx.get("date"),
+            "description": tx.get("description"),
+            "amount": tx.get("amount"),  # Already a string with proper sign
+            "currency": tx.get("currency", "TRY"),
+            "category": tx.get("category", "Other"),
+            "file_path": file_path,
+            "user_id": "system"  # You'll need to get this from auth context
+        }
+        prepared_transactions.append(prepared_tx)
+    
+    try:
+        response = requests.post(url, headers=headers, json=prepared_transactions, timeout=15)
+        
+        if response.status_code in (200, 201):
+            logger.info(f"Successfully saved {len(prepared_transactions)} transactions")
+            return True
+        else:
+            logger.error(f"Failed to save transactions: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error saving transactions: {str(e)}")
         return False
 
 def get_document_details(document_id: str) -> Optional[Dict[str, Any]]:
@@ -170,7 +228,7 @@ def get_document_details(document_id: str) -> Optional[Dict[str, Any]]:
             else:
                 logger.warning(f"Document {document_id} not found")
                 return None
-        else:
+        else: 
             logger.error(f"Failed to fetch document: {response.status_code}")
             return None
             
