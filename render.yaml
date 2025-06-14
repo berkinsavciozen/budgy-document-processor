@@ -33,5 +33,8 @@ services:
       - key: TESSERACT_LANG
         value: "eng, tr"
       - key: ALLOWED_ORIGINS
-        value: "https://preview--royal-budget-sculptor.lovable.app,https://royal-budget-sculptor.lovable.app,https://smart-budgeteer.app,https://*.lovable.app,https://*.lovable.dev,https://*.lovableproject.com,http://localhost:3000,http://localhost:5173,*"
+        value: "*"
+        sync: false
+      - key: CORS_ENABLED
+        value: "true"
         sync: false
