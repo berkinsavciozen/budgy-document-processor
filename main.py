@@ -1,4 +1,3 @@
-
 import os
 import time
 import logging
@@ -12,6 +11,7 @@ from pydantic import BaseModel, Field
 
 # Import custom modules (assuming they are in the same directory)
 from pdf_extractor import extract_transactions
+from supabase_utils import update_document_record, get_document_details
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +45,11 @@ class ProcessingResponse(BaseModel):
     extraction_quality: Optional[str] = None
     error: Optional[str] = None
 
+# Define request model for confirming transactions
+class ConfirmTransactionsRequest(BaseModel):
+    file_path: str
+    transactions: List[Dict[str, Any]]
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -54,40 +59,8 @@ async def health_check():
         "timestamp": time.time()
     }
 
-def process_document_task(temp_file_path: str, document_id: str):
-    """Background task to process a document
-    
-    Args:
-        temp_file_path: Path to the temporary PDF file
-        document_id: ID of the document record
-    """
-    try:
-        logger.info(f"Processing document in background task: {document_id}")
-        logger.info(f"File path: {temp_file_path}")
-        
-        # Check if file exists and is readable
-        if not os.path.exists(temp_file_path):
-            logger.error(f"Temp file not found: {temp_file_path}")
-            return
-        
-        # Extract transactions from the PDF
-        transactions = extract_transactions(temp_file_path)
-        
-        logger.info(f"Extraction complete: Found {len(transactions)} transactions")
-        
-        # Clean up the temporary file
-        try:
-            os.unlink(temp_file_path)
-            logger.debug(f"Temporary file removed: {temp_file_path}")
-        except Exception as e:
-            logger.error(f"Error removing temp file: {e}")
-    
-    except Exception as e:
-        logger.exception(f"Error in background processing task: {str(e)}")
-
 @app.post("/process-pdf", response_model=ProcessingResponse)
 async def process_pdf(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_id: str = Form(...),
     x_auth_token: Optional[str] = Header(None)
@@ -136,6 +109,9 @@ async def process_pdf(
         
         logger.info(f"Extracted {num_transactions} transactions in {processing_time}ms")
         
+        # Update document status in database
+        update_document_record(document_id, "completed", transactions)
+        
         # Return the response with transaction data
         return {
             "success": True,
@@ -156,6 +132,10 @@ async def process_pdf(
         error_traceback = traceback.format_exc()
         logger.error(f"Traceback: {error_traceback}")
         
+        # Update document status to error
+        if document_id:
+            update_document_record(document_id, "error", [])
+        
         return JSONResponse(
             status_code=500,
             content={
@@ -174,6 +154,49 @@ async def process_pdf(
                 logger.debug(f"Temporary file removed in finally block: {temp_file_path}")
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
+
+@app.post("/confirm-transactions")
+async def confirm_transactions(request: ConfirmTransactionsRequest):
+    """
+    Confirm and save transactions to the database
+    
+    Args:
+        request: Request containing file_path and transactions list
+        
+    Returns:
+        JSON response indicating success or failure
+    """
+    try:
+        logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
+        
+        # Validate transactions
+        if not request.transactions:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "No transactions provided"}
+            )
+        
+        # Here you would typically save to your main database
+        # For now, we'll just log and return success
+        for i, tx in enumerate(request.transactions):
+            logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
+        
+        return {
+            "success": True,
+            "message": f"Successfully confirmed {len(request.transactions)} transactions",
+            "transaction_count": len(request.transactions)
+        }
+        
+    except Exception as e:
+        logger.exception(f"Error confirming transactions: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False, 
+                "error": str(e),
+                "message": "Failed to confirm transactions"
+            }
+        )
 
 if __name__ == "__main__":
     import uvicorn
