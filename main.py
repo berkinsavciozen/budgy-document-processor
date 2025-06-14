@@ -1,3 +1,4 @@
+
 import os
 import time
 import logging
@@ -48,7 +49,6 @@ async def add_cors_to_every_response(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        # Even if FastAPI throws a 500, return error with CORS!
         content = {"success": False, "error": str(exc), "message": "Internal server error"}
         response = JSONResponse(status_code=500, content=content)
     # Always set CORS headers
@@ -56,7 +56,6 @@ async def add_cors_to_every_response(request: Request, call_next):
         response.headers[k] = v
     return response
 
-# Define response model for document processing
 class ProcessingResponse(BaseModel):
     success: bool
     message: Optional[str] = None
@@ -68,14 +67,12 @@ class ProcessingResponse(BaseModel):
     extraction_quality: Optional[str] = None
     error: Optional[str] = None
 
-# Define request model for confirming transactions
 class ConfirmTransactionsRequest(BaseModel):
     file_path: str
     transactions: List[Dict[str, Any]]
 
 @app.get("/health")
 async def health_check():
-    """Simple health check endpoint to verify the service is running"""
     return {
         "status": "healthy",
         "timestamp": time.time()
@@ -87,17 +84,6 @@ async def process_pdf(
     document_id: str = Form(...),
     x_auth_token: Optional[str] = Header(None)
 ):
-    """
-    Process a PDF document to extract transaction data.
-
-    Args:
-        file: Uploaded PDF file.
-        document_id: ID of the document in the database.
-        x_auth_token: JWT token for authentication.
-
-    Returns:
-        JSON response with processing status and extracted transactions.
-    """
     start_time = time.time()
     temp_file_path = None
     
@@ -105,46 +91,45 @@ async def process_pdf(
         logger.info(f"Received document ID: {document_id}")
         logger.info(f"File: {file.filename}, size: {file.size}, content_type: {file.content_type}")
         
-        # Validate file
         if not file.filename.lower().endswith('.pdf'):
             logger.warning(f"Invalid file type: {file.filename}")
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "Only PDF files are supported"}
+                content={"success": False, "error": "Only PDF files are supported"},
+                headers=CORS_HEADERS
             )
         
-        # Create a temporary file to store the uploaded content
         temp_file_path = f"/tmp/upload_{document_id}.pdf"
         
-        # Write the file to disk
         with open(temp_file_path, "wb") as temp_file:
             content = await file.read()
             temp_file.write(content)
             
         logger.info(f"File saved to: {temp_file_path}")
         
-        # Extract transactions immediately (not in background)
         transactions = extract_transactions(temp_file_path)
         num_transactions = len(transactions)
         
-        processing_time = int((time.time() - start_time) * 1000)  # ms
+        processing_time = int((time.time() - start_time) * 1000)
         
         logger.info(f"Extracted {num_transactions} transactions in {processing_time}ms")
         
-        # Update document status in database
         update_document_record(document_id, "completed", transactions)
         
-        # Return the response with transaction data
-        return {
-            "success": True,
-            "document_id": document_id,
-            "transactions": transactions,
-            "transaction_count": num_transactions,
-            "extraction_method": "automatic",
-            "extraction_quality": "high" if num_transactions > 0 else "low",
-            "processing_time_ms": processing_time,
-            "message": f"Successfully extracted {num_transactions} transactions"
-        }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "document_id": document_id,
+                "transactions": transactions,
+                "transaction_count": num_transactions,
+                "extraction_method": "automatic",
+                "extraction_quality": "high" if num_transactions > 0 else "low",
+                "processing_time_ms": processing_time,
+                "message": f"Successfully extracted {num_transactions} transactions"
+            },
+            headers=CORS_HEADERS
+        )
         
     except Exception as e:
         processing_time = int((time.time() - start_time) * 1000)
@@ -154,7 +139,6 @@ async def process_pdf(
         error_traceback = traceback.format_exc()
         logger.error(f"Traceback: {error_traceback}")
         
-        # Update document status to error
         if document_id:
             update_document_record(document_id, "error", [])
         
@@ -166,10 +150,10 @@ async def process_pdf(
                 "document_id": document_id,
                 "processing_time_ms": processing_time,
                 "message": "Failed to process document"
-            }
+            },
+            headers=CORS_HEADERS
         )
     finally:
-        # Clean up the temp file in case it wasn't done in the background task
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
@@ -177,64 +161,60 @@ async def process_pdf(
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
+# --- CORS Helper for Explicit Routes ---
 def _cors_headers():
-    return CORS_HEADERS
+    return CORS_HEADERS.copy()
 
 # === CORS fix: Explicitly handle OPTIONS for /confirm-transactions ===
 @app.options("/confirm-transactions")
 async def options_confirm_transactions(request: Request):
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Requested-With,X-Client-Info,ApiKey,Origin,Accept",
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Max-Age": "86400",
-        "Access-Control-Expose-Headers": "Content-Type, Authorization"
-    }
-    # Just return an empty OK response
+    headers = _cors_headers()
     return PlainTextResponse("", status_code=204, headers=headers)
 
 @app.post("/confirm-transactions")
-async def confirm_transactions(request: ConfirmTransactionsRequest, response: Response):
-    """
-    Confirm and save transactions to the database
-
-    Args:
-        request: Request containing file_path and transactions list
-
-    Returns:
-        JSON response indicating success or failure
-    """
-    add_cors_headers(response)  # For maximum compatibility
+async def confirm_transactions(request: ConfirmTransactionsRequest):
     try:
         logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
 
         if not request.transactions:
-            response.status_code = 400
-            return {
-                "success": False,
-                "error": "No transactions provided"
-            }
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "No transactions provided"
+                },
+                headers=CORS_HEADERS
+            )
 
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
 
-        return {
-            "success": True,
-            "message": f"Successfully confirmed {len(request.transactions)} transactions",
-            "transaction_count": len(request.transactions)
-        }
+        # You may want to persist transactions here to DB... (not shown as per original code)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": f"Successfully confirmed {len(request.transactions)} transactions",
+                "transaction_count": len(request.transactions)
+            },
+            headers=CORS_HEADERS
+        )
 
     except Exception as e:
         logger.exception(f"Error confirming transactions: {str(e)}")
-        response.status_code = 500
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "Failed to confirm transactions"
-        }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Failed to confirm transactions"
+            },
+            headers=CORS_HEADERS
+        )
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+
