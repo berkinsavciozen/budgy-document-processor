@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
-# Import custom modules (assuming they are in the same directory)
 from pdf_extractor import extract_transactions
 from supabase_utils import update_document_record, get_document_details
 
@@ -34,12 +33,12 @@ CORS_HEADERS = {
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
     response = await call_next(request)
-    # Add CORS headers to all responses, especially for /confirm-transactions
+    # Universal CORS: ensure both regular and error responses from these endpoints get headers
     path = request.url.path
-    if path == "/confirm-transactions":
+    if path in ["/confirm-transactions", "/process-pdf"]:
         for k, v in CORS_HEADERS.items():
             response.headers[k] = v
-        logger.info(f"CORS headers injected for {path}: {dict(CORS_HEADERS)}")
+        logger.debug(f"CORS headers injected for {path}: {dict(CORS_HEADERS)}")
     return response
 
 class ProcessingResponse(BaseModel):
@@ -65,6 +64,7 @@ async def health_check():
         "cors_enabled": True
     }
 
+# ----- PDF Processing Endpoint -----
 @app.post("/process-pdf", response_model=ProcessingResponse)
 async def process_pdf(
     file: UploadFile = File(...),
@@ -75,7 +75,7 @@ async def process_pdf(
     temp_file_path = None
     try:
         logger.info(f"Received document ID: {document_id}")
-        logger.info(f"File: {file.filename}, size: {file.size}, content_type: {file.content_type}")
+        logger.info(f"File: {file.filename}, content_type: {file.content_type}")
 
         if not file.filename.lower().endswith('.pdf'):
             logger.warning(f"Invalid file type: {file.filename}")
@@ -119,7 +119,6 @@ async def process_pdf(
     except Exception as e:
         processing_time = int((time.time() - start_time) * 1000)
         logger.exception(f"Error processing PDF: {str(e)}")
-
         error_message = str(e)
         error_traceback = traceback.format_exc()
         logger.error(f"Traceback: {error_traceback}")
@@ -127,7 +126,7 @@ async def process_pdf(
         if document_id:
             update_document_record(document_id, "error", [])
 
-        resp = JSONResponse(
+        return JSONResponse(
             status_code=500,
             content={
                 "success": False,
@@ -138,7 +137,6 @@ async def process_pdf(
             },
             headers=CORS_HEADERS
         )
-        return resp
     finally:
         if temp_file_path and os.path.exists(temp_file_path):
             try:
@@ -147,16 +145,19 @@ async def process_pdf(
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
-# Explicit OPTIONS handler for confirm-transactions
+# ------------- CORS OPTIONS HANDLER FOR confirm-transactions ---------------
 @app.options("/confirm-transactions")
-async def options_confirm_transactions():
-    logger.info("OPTIONS preflight received for /confirm-transactions")
-    return PlainTextResponse(
+async def options_confirm_transactions(req: Request):
+    logger.info(f"OPTIONS preflight received for /confirm-transactions from {req.client.host}")
+    resp = PlainTextResponse(
         "",
         status_code=200,
         headers=CORS_HEADERS
     )
+    logger.debug("OPTIONS preflight responded with CORS headers")
+    return resp
 
+# ------------- CONFIRM TRANSACTIONS LOGIC (POST) ---------------
 @app.post("/confirm-transactions")
 async def confirm_transactions(request: ConfirmTransactionsRequest, http_req: Request):
     logger.info(f"Received /confirm-transactions request [{http_req.method}] from {http_req.client.host}")
@@ -165,7 +166,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest, http_req: Re
 
         if not request.transactions:
             logger.warning("No transactions provided!")
-            resp = JSONResponse(
+            return JSONResponse(
                 status_code=400,
                 content={
                     "success": False,
@@ -173,7 +174,6 @@ async def confirm_transactions(request: ConfirmTransactionsRequest, http_req: Re
                 },
                 headers=CORS_HEADERS
             )
-            return resp
 
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
@@ -192,7 +192,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest, http_req: Re
 
     except Exception as e:
         logger.exception(f"Error confirming transactions: {str(e)}")
-        resp = JSONResponse(
+        return JSONResponse(
             status_code=500,
             content={
                 "success": False,
@@ -201,12 +201,13 @@ async def confirm_transactions(request: ConfirmTransactionsRequest, http_req: Re
             },
             headers=CORS_HEADERS
         )
-        return resp
 
-# --- GLOBAL exception handler for CORS: fallback in case unhandled Exception is raised (extra safe) ---
+# --- GLOBAL exception handler for CORS (all routes, fallback) ---
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception(f"Global Exception: {exc}")
+    path = request.url.path
+    headers = CORS_HEADERS.copy() if path in ["/confirm-transactions", "/process-pdf"] else {}
     resp = JSONResponse(
         status_code=500,
         content={
@@ -214,7 +215,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             "error": str(exc),
             "message": "Internal server error"
         },
-        headers=CORS_HEADERS
+        headers=headers
     )
     return resp
 
