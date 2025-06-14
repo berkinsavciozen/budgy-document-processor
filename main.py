@@ -3,9 +3,9 @@ import time
 import logging
 import traceback
 import json
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define response model for document processing
+def _cors_headers():
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "86400",
+        "Access-Control-Expose-Headers": "Content-Type, Authorization"
+    }
+
 class ProcessingResponse(BaseModel):
     success: bool
     message: Optional[str] = None
@@ -45,12 +54,10 @@ class ProcessingResponse(BaseModel):
     extraction_quality: Optional[str] = None
     error: Optional[str] = None
 
-# Define request model for confirming transactions
 class ConfirmTransactionsRequest(BaseModel):
     file_path: str
     transactions: List[Dict[str, Any]]
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint to verify the service is running"""
@@ -65,17 +72,7 @@ async def process_pdf(
     document_id: str = Form(...),
     x_auth_token: Optional[str] = Header(None)
 ):
-    """
-    Process a PDF document to extract transaction data
-    
-    Args:
-        file: The PDF file to process
-        document_id: The ID of the document in the database
-        x_auth_token: Optional authentication token
-        
-    Returns:
-        JSON response with processing results
-    """
+    # ... keep existing code (process_pdf) the same ...
     start_time = time.time()
     temp_file_path = None
     
@@ -155,6 +152,12 @@ async def process_pdf(
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
+# --- CORS fix for /confirm-transactions ---
+@app.options("/confirm-transactions")
+async def options_confirm_transactions(request: Request):
+    """Respond to CORS preflight with correct headers for POST"""
+    return PlainTextResponse("", status_code=204, headers=_cors_headers())
+
 @app.post("/confirm-transactions")
 async def confirm_transactions(request: ConfirmTransactionsRequest):
     """
@@ -166,6 +169,7 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
     Returns:
         JSON response indicating success or failure
     """
+    headers = _cors_headers()
     try:
         logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
         
@@ -173,7 +177,8 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
         if not request.transactions:
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "No transactions provided"}
+                content={"success": False, "error": "No transactions provided"},
+                headers=headers
             )
         
         # Here you would typically save to your main database
@@ -181,11 +186,15 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
         
-        return {
-            "success": True,
-            "message": f"Successfully confirmed {len(request.transactions)} transactions",
-            "transaction_count": len(request.transactions)
-        }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": f"Successfully confirmed {len(request.transactions)} transactions",
+                "transaction_count": len(request.transactions)
+            },
+            headers=headers
+        )
         
     except Exception as e:
         logger.exception(f"Error confirming transactions: {str(e)}")
@@ -195,7 +204,8 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
                 "success": False, 
                 "error": str(e),
                 "message": "Failed to confirm transactions"
-            }
+            },
+            headers=headers
         )
 
 if __name__ == "__main__":
