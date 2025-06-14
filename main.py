@@ -1,4 +1,3 @@
-
 import os
 import time
 import logging
@@ -22,28 +21,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("budgy-document-processor")
 
-# Initialize FastAPI app
+# --- GLOBAL CORS HEADERS WORKAROUND ---
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Max-Age": "86400",
+    "Access-Control-Expose-Headers": "Content-Type, Authorization"
+}
+
 app = FastAPI(title="Budgy Document Processor", description="API for processing financial documents")
 
-# Configure CORS
+# Retain CORSMiddleware for completeness (it's fine to be redundant)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production, specify exact domains
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def _cors_headers():
-    return {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Max-Age": "86400",
-        "Access-Control-Expose-Headers": "Content-Type, Authorization"
-    }
+# --- GLOBAL MIDDLEWARE TO ENSURE CORS HEADERS ON ANY RESPONSE ---
+@app.middleware("http")
+async def add_cors_to_every_response(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # Even if FastAPI throws a 500, return error with CORS!
+        content = {"success": False, "error": str(exc), "message": "Internal server error"}
+        response = JSONResponse(status_code=500, content=content)
+    # Always set CORS headers
+    for k, v in CORS_HEADERS.items():
+        response.headers[k] = v
+    return response
 
+# Define response model for document processing
 class ProcessingResponse(BaseModel):
     success: bool
     message: Optional[str] = None
@@ -55,6 +68,7 @@ class ProcessingResponse(BaseModel):
     extraction_quality: Optional[str] = None
     error: Optional[str] = None
 
+# Define request model for confirming transactions
 class ConfirmTransactionsRequest(BaseModel):
     file_path: str
     transactions: List[Dict[str, Any]]
@@ -63,7 +77,7 @@ class ConfirmTransactionsRequest(BaseModel):
 async def health_check():
     """Simple health check endpoint to verify the service is running"""
     return {
-        "status": "healthy", 
+        "status": "healthy",
         "timestamp": time.time()
     }
 
@@ -73,7 +87,17 @@ async def process_pdf(
     document_id: str = Form(...),
     x_auth_token: Optional[str] = Header(None)
 ):
-    # ... keep existing code (process_pdf) the same ...
+    """
+    Process a PDF document to extract transaction data.
+
+    Args:
+        file: Uploaded PDF file.
+        document_id: ID of the document in the database.
+        x_auth_token: JWT token for authentication.
+
+    Returns:
+        JSON response with processing status and extracted transactions.
+    """
     start_time = time.time()
     temp_file_path = None
     
@@ -153,24 +177,25 @@ async def process_pdf(
             except Exception as cleanup_error:
                 logger.error(f"Error removing temp file in finally block: {cleanup_error}")
 
-# --- CORS fix for /confirm-transactions ---
 def _cors_headers():
-    return {
+    return CORS_HEADERS
+
+# === CORS fix: Explicitly handle OPTIONS for /confirm-transactions ===
+@app.options("/confirm-transactions")
+async def options_confirm_transactions(request: Request):
+    headers = {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Client-Info, ApiKey, Origin, Accept",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Requested-With,X-Client-Info,ApiKey,Origin,Accept",
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Max-Age": "86400",
         "Access-Control-Expose-Headers": "Content-Type, Authorization"
     }
-
-@app.options("/confirm-transactions")
-async def options_confirm_transactions(request: Request):
-    """Respond to CORS preflight with correct headers for POST"""
-    return PlainTextResponse("", status_code=204, headers=_cors_headers())
+    # Just return an empty OK response
+    return PlainTextResponse("", status_code=204, headers=headers)
 
 @app.post("/confirm-transactions")
-async def confirm_transactions(request: ConfirmTransactionsRequest):
+async def confirm_transactions(request: ConfirmTransactionsRequest, response: Response):
     """
     Confirm and save transactions to the database
 
@@ -180,45 +205,34 @@ async def confirm_transactions(request: ConfirmTransactionsRequest):
     Returns:
         JSON response indicating success or failure
     """
-    headers = _cors_headers()
+    add_cors_headers(response)  # For maximum compatibility
     try:
-        # Log the request (for debug)
         logger.info(f"Confirming {len(request.transactions)} transactions for file: {request.file_path}")
 
-        # Validate transactions
         if not request.transactions:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "No transactions provided"},
-                headers=headers
-            )
-        # Here you would typically save to your main database
-        # For now, we'll just log and return success
+            response.status_code = 400
+            return {
+                "success": False,
+                "error": "No transactions provided"
+            }
+
         for i, tx in enumerate(request.transactions):
             logger.info(f"Transaction {i+1}: {tx.get('date')} - {tx.get('description')} - {tx.get('amount')}")
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "message": f"Successfully confirmed {len(request.transactions)} transactions",
-                "transaction_count": len(request.transactions)
-            },
-            headers=headers
-        )
+        return {
+            "success": True,
+            "message": f"Successfully confirmed {len(request.transactions)} transactions",
+            "transaction_count": len(request.transactions)
+        }
 
     except Exception as e:
         logger.exception(f"Error confirming transactions: {str(e)}")
-        # Always build error response with CORS headers
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": str(e),
-                "message": "Failed to confirm transactions"
-            },
-            headers=headers
-        )
+        response.status_code = 500
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to confirm transactions"
+        }
 
 if __name__ == "__main__":
     import uvicorn
