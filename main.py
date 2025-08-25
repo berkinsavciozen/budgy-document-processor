@@ -1,10 +1,10 @@
-# main.py  (replace your previous main.py with this complete file)
-import io, os
-from typing import List, Optional, Any, Dict, Tuple
+# main.py
+import os
+from typing import List, Optional, Any
 from fastapi import FastAPI, File, UploadFile, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from pdf_extractor import extract_transactions
 from supabase_utils import (
@@ -15,7 +15,7 @@ from supabase_utils import (
     upsert_user_rules,
 )
 
-SERVICE_VERSION = "v0.7.0"
+SERVICE_VERSION = "v0.7.2"
 
 app = FastAPI(title="Budgy Document Processor", version=SERVICE_VERSION)
 
@@ -35,14 +35,14 @@ class ProcessDocumentRequest(BaseModel):
     file_path: str
     bucket_name: str = "documents"
     document_id: Optional[str] = None
-    user_id: Optional[str] = None  # used to fetch user rules
+    user_id: Optional[str] = None
 
 class TransactionRow(BaseModel):
     date: Optional[str] = None
     description: Optional[str] = None
     amount: Optional[Any] = None
     currency: Optional[str] = None
-    category: Optional[str] = None        # legacy: equals category_main
+    category: Optional[str] = None
     category_main: Optional[str] = None
     category_sub: Optional[str] = None
     type: Optional[str] = None
@@ -72,13 +72,6 @@ def health():
 def preflight(rest_of_path: str):
     return PlainTextResponse("", status_code=204)
 
-def _with_user_rules(transactions: List[Dict[str, Any]], user_id: Optional[str]) -> List[Dict[str, Any]]:
-    """
-    Re-run categorization overlay using user rules only when the extractor didn't produce one (or produced 'Misc/Other').
-    NOTE: The extractor itself already tries to use rules if provided; this is just a safety net.
-    """
-    return transactions  # extractor handles user rules when provided; keep for future adjustments
-
 @app.post("/process-pdf")
 async def process_pdf(
     request: Request,
@@ -86,7 +79,6 @@ async def process_pdf(
     authorization: Optional[str] = Header(default=None),
 ):
     try:
-        # Resolve user to fetch rules
         user_id = None
         if authorization and authorization.startswith("Bearer "):
             user_id = get_user_id_from_bearer(authorization.replace("Bearer ", "").strip())
@@ -158,10 +150,6 @@ async def category_feedback(
     body: CategoryFeedbackRequest,
     authorization: Optional[str] = Header(default=None),
 ):
-    """
-    App calls this after a user edits categories in Review or later views.
-    We upsert simple pattern rules so future extractions auto-categorize correctly.
-    """
     try:
         user_id = body.user_id
         if not user_id and authorization and authorization.startswith("Bearer "):
