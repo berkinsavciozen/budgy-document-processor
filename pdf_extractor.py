@@ -1,266 +1,232 @@
 """
-PDF Transaction Extractor Module
-Extracts transaction data from financial PDFs (bank & credit-card statements)
-with an OCR fallback for empty/CID-encoded/garbled pages, plus support for
-Turkish month-name dates and intelligent expense/income detection.
+PDF Transaction Extractor
+- Extracts tabular rows via pdfplumber
+- Falls back to text/regex + OCR (PyMuPDF + Tesseract) when needed
+- Handles TR/EU/US number formats and Turkish month names
+Returns (transactions, meta)
 """
-import logging
-import re
 import os
+import re
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import pdfplumber
-import fitz  # PyMuPDF for rendering pages to images for OCR fallback
+import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 
-logger = logging.getLogger("budgy-document-processor.pdf_extractor")
-
 DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "TRY")
+TESSERACT_LANG = os.getenv("TESSERACT_LANG", "eng+tur")
 
-# 1) Bank statements: row#, DD/MM/YYYY, desc, amount, balance
-ACCOUNT_LINE_RE = re.compile(
-    r'^\s*\d+\s+'
-    r'(\d{2}/\d{2}/\d{4})\s+'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$'
-)
-
-# 2) Credit cards ending in "TL"
-CREDIT_TL_RE = re.compile(
-    r'^\s*(\d{2}/\d{2}/\d{4})\s+'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*TL\s*$'
-)
-
-# 3) Credit cards with multiple trailing numeric columns
-CREDIT_MULTI_RE = re.compile(
-    r'^\s*(\d{2}/\d{2}/\d{4})\s*'
-    r'(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})'
-    r'(?:\s+[0-9]{1,3}(?:\.[0-9]{3})*,\d{2})+\s*$'
-)
-
-# 4) Turkish month-name dates, e.g. "10 Kasım 2024 … 180,00+"
-MONTHS = {
-    "Ocak":1, "Şubat":2, "Mart":3, "Nisan":4, "Mayıs":5, "Haziran":6,
-    "Temmuz":7, "Ağustos":8, "Eylül":9, "Ekim":10, "Kasım":11, "Aralık":12
+TR_MONTHS = {
+    "oca": 1, "şub": 2, "sub": 2, "mar": 3, "nis": 4, "may": 5, "haz": 6,
+    "tem": 7, "ağu": 8, "agu": 8, "eyl": 9, "eki": 10, "kas": 11, "ara": 12,
 }
-_month_names = "|".join(MONTHS.keys())
-TEXT_DATE_RE = re.compile(
-    rf'^\s*(\d{{1,2}})\s+({_month_names})\s+(\d{{4}})\s+(.+?)\s+'
-    r'(-?\d{1,3}(?:\.\d{3})*,\d{2})\+?\s*$'
+
+DATE_PATTERNS = [
+    # 31/12/2024 or 31.12.2024
+    re.compile(r"\b(\d{2})[./](\d{2})[./](\d{4})\b"),
+    # 2024-12-31
+    re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"),
+    # 31 Oca 2024
+    re.compile(r"\b(\d{1,2})\s+([A-Za-zŞşÜüĞğİıÖöÇç]+)\s+(\d{4})\b"),
+]
+
+AMOUNT_PATTERNS = [
+    # -1.234,56  |  1.234,56  |  -1234,56  (EU/TR)
+    re.compile(r"^-?\d{1,3}(?:\.\d{3})*,\d{2}$"),
+    # -1,234.56  |  1,234.56  |  -1234.56  (US)
+    re.compile(r"^-?\d{1,3}(?:,\d{3})*\.\d{2}$"),
+    # Plain int or decimal with sign
+    re.compile(r"^-?\d+(?:[.,]\d+)?$"),
+]
+
+def _normalize_amount(s: str) -> str:
+    """Normalize amount string to dot decimal (e.g., '1234.56'). Return original if cannot."""
+    raw = s.strip()
+    if not raw:
+        return raw
+    # Remove currency suffix/prefix if present (TL, TRY, $, €)
+    raw = re.sub(r"(TL|TRY|USD|EUR|GBP|₺|€|\$)\b", "", raw, flags=re.IGNORECASE).strip()
+    # Try EU/TR format 1.234,56
+    if re.search(r",\d{2}$", raw) and "." in raw:
+        try:
+            val = float(raw.replace(".", "").replace(",", "."))
+            return f"{val:.2f}"
+        except Exception:
+            pass
+    # Try US format 1,234.56
+    if re.search(r"\.\d{2}$", raw) and "," in raw:
+        try:
+            val = float(raw.replace(",", ""))
+            return f"{val:.2f}"
+        except Exception:
+            pass
+    # Fallback remove thousands like "1.234" w/o decimals
+    if raw.count(".") > 1 and "," not in raw:
+        try:
+            val = float(raw.replace(".", ""))
+            return f"{val:.2f}"
+        except Exception:
+            pass
+    # Replace comma decimal if looks like decimal
+    if raw.count(",") == 1 and raw.count(".") == 0:
+        maybe = raw.replace(",", ".")
+        try:
+            val = float(maybe)
+            return f"{val:.2f}"
+        except Exception:
+            pass
+    # As last resort, try plain float
+    try:
+        val = float(raw)
+        return f"{val:.2f}"
+    except Exception:
+        return s.strip()
+
+def _parse_date(s: str) -> str:
+    s = s.strip()
+    for rx in DATE_PATTERNS:
+        m = rx.search(s)
+        if not m:
+            continue
+        if rx is DATE_PATTERNS[0]:
+            d, mth, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return datetime(y, mth, d).strftime("%Y-%m-%d")
+        if rx is DATE_PATTERNS[1]:
+            y, mth, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return datetime(y, mth, d).strftime("%Y-%m-%d")
+        if rx is DATE_PATTERNS[2]:
+            d = int(m.group(1))
+            mon_name = m.group(2).lower()[:3]
+            y = int(m.group(3))
+            mth = TR_MONTHS.get(mon_name, None)
+            if mth:
+                return datetime(y, mth, d).strftime("%Y-%m-%d")
+    # Unparseable → return original
+    return s
+
+def _infer_type(amount_str: str) -> str:
+    try:
+        val = float(_normalize_amount(amount_str))
+        return "expense" if val < 0 else "income"
+    except Exception:
+        return "expense"
+
+def _from_table(table: List[List[Any]]) -> List[Dict[str, Any]]:
+    if not table or len(table) < 2:
+        return []
+    header = [(h or "").strip().lower() for h in table[0]]
+    results: List[Dict[str, Any]] = []
+    for row in table[1:]:
+        cells = [(c or "").strip() for c in row]
+        rec = {header[i] if i < len(header) else f"col_{i}": (cells[i] if i < len(cells) else "") for i in range(len(header))}
+        # try map
+        date = rec.get("date") or rec.get("tarih") or rec.get("islem tarihi") or rec.get("i̇şlem tarihi")
+        desc = rec.get("description") or rec.get("açıklama") or rec.get("aciklama") or rec.get("işlem") or rec.get("islem")
+        amt  = rec.get("amount") or rec.get("tutar") or rec.get("işlem tutarı") or rec.get("islem tutari")
+        cur  = rec.get("currency") or rec.get("para birimi") or rec.get("pb") or None
+
+        if not (date and desc and amt):
+            # fallback heuristic: find amount-looking cell
+            amt_candidates = [c for c in cells if any(rx.match(c.replace(" ", "")) for rx in AMOUNT_PATTERNS)]
+            if not amt and amt_candidates:
+                amt = amt_candidates[-1]
+            if not desc:
+                # take the longest non-amount cell as description
+                non_amount = [c for c in cells if c and c != amt]
+                desc = max(non_amount, key=len) if non_amount else ""
+
+        if not (date and desc and amt):
+            continue
+
+        results.append({
+            "date": _parse_date(date),
+            "description": desc,
+            "amount": _normalize_amount(amt),
+            "currency": cur or DEFAULT_CURRENCY,
+            "category": None,
+            "type": _infer_type(amt),
+        })
+    return results
+
+def _ocr_page(page) -> str:
+    pix = page.get_pixmap(dpi=240, alpha=False)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    text = pytesseract.image_to_string(img, lang=TESSERACT_LANG)
+    return text
+
+LINE_RX = re.compile(
+    r"(?P<date>\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-zŞşÜüĞğİıÖöÇç]+\s+\d{4})"
+    r"\s+"
+    r"(?P<desc>.+?)"
+    r"\s+"
+    r"(?P<amt>-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|-?\d+(?:[.,]\d{2})?)"
+    r"(?:\s*(?P<cur>TL|TRY|USD|EUR|GBP|₺|€|\$))?$",
+    flags=re.IGNORECASE
 )
 
-def determine_transaction_type(description: str, amount: float) -> str:
-    """
-    Determine if a transaction is an expense or income based on description and amount
-    
-    Args:
-        description: Transaction description
-        amount: Transaction amount (positive or negative)
-        
-    Returns:
-        str: "Expense" or "Income"
-    """
-    desc_lower = description.lower()
-    
-    # Income keywords (Turkish and English)
-    income_keywords = [
-        'maaş', 'salary', 'wage', 'gelir', 'income', 'deposit', 'havale gelen',
-        'eft gelen', 'transfer gelen', 'faiz', 'interest', 'bonus', 'prim',
-        'iade', 'refund', 'cashback', 'geri ödeme', 'dividend', 'temettü'
-    ]
-    
-    # Expense keywords (Turkish and English)
-    expense_keywords = [
-        'alışveriş', 'shopping', 'market', 'pos', 'atm', 'çekim', 'withdrawal',
-        'ödeme', 'payment', 'fatura', 'bill', 'kira', 'rent', 'yakıt', 'fuel',
-        'benzin', 'petrol', 'restaurant', 'cafe', 'restoran', 'yemek', 'food',
-        'havale giden', 'eft giden', 'transfer giden', 'komisyon', 'commission',
-        'ücret', 'fee', 'masraf', 'expense', 'harcama', 'spend', 'purchase',
-        'satın alma', 'online', 'internet', 'telefon', 'phone', 'elektrik',
-        'electricity', 'su', 'water', 'doğalgaz', 'gas', 'kredi kartı',
-        'credit card', 'taksit', 'installment', 'borç', 'debt', 'loan'
-    ]
-    
-    # Check for income keywords
-    for keyword in income_keywords:
-        if keyword in desc_lower:
-            return "Income"
-    
-    # Check for expense keywords
-    for keyword in expense_keywords:
-        if keyword in desc_lower:
-            return "Expense"
-    
-    # If amount is already negative, likely an expense
-    if amount < 0:
-        return "Expense"
-    
-    # Default: positive amounts are usually income, but could be expenses
-    # Check for common expense patterns even with positive amounts
-    if any(word in desc_lower for word in ['pos', 'market', 'atm', 'alışveriş', 'ödeme']):
-        return "Expense"
-    
-    # Default to income for positive amounts without clear expense indicators
-    return "Income"
-
-def normalize_amount(amount_str: str, transaction_type: str) -> str:
-    """
-    Normalize amount to proper signed string format
-    
-    Args:
-        amount_str: Raw amount string from PDF
-        transaction_type: "Expense" or "Income"
-        
-    Returns:
-        str: Properly signed amount as string (e.g., "-123.45" for expenses, "123.45" for income)
-    """
-    # Clean the amount string
-    clean_amount = amount_str.strip().rstrip('+')
-    
-    # Handle parentheses (usually indicate negative)
-    is_negative = False
-    if clean_amount.startswith('(') and clean_amount.endswith(')'):
-        is_negative = True
-        clean_amount = clean_amount[1:-1]
-    elif clean_amount.startswith('-'):
-        is_negative = True
-        clean_amount = clean_amount[1:]
-    
-    # Convert Turkish format to standard format (1.234,56 -> 1234.56)
-    if ',' in clean_amount and '.' in clean_amount:
-        # Format: 1.234,56
-        clean_amount = clean_amount.replace('.', '').replace(',', '.')
-    elif ',' in clean_amount:
-        # Format: 1234,56
-        clean_amount = clean_amount.replace(',', '.')
-    
-    # Convert to float
-    try:
-        amount_float = float(clean_amount)
-    except ValueError:
-        logger.warning(f"Could not parse amount: {amount_str}")
-        return "0.00"
-    
-    # Apply original sign if detected
-    if is_negative:
-        amount_float = -abs(amount_float)
-    
-    # Apply transaction type logic
-    if transaction_type == "Expense":
-        amount_float = -abs(amount_float)  # Expenses are negative
-    elif transaction_type == "Income":
-        amount_float = abs(amount_float)   # Income is positive
-    
-    # Return as formatted string
-    return f"{amount_float:.2f}"
-
-def extract_transactions(pdf_path: str) -> List[Dict[str, Any]]:
-    """
-    Extract a list of transactions from a PDF file.
-    Returns list of dicts: {date, description, amount, currency, confidence, transaction_type}
-    """
-    if not os.path.exists(pdf_path) or not os.access(pdf_path, os.R_OK):
-        logger.error(f"Cannot read PDF: {pdf_path}")
-        return []
-
+def _from_free_text(text: str) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = LINE_RX.search(line)
+        if not m:
+            continue
+        date = _parse_date(m.group("date"))
+        desc = m.group("desc").strip()
+        amt  = m.group("amt").strip()
+        cur  = m.group("cur") or DEFAULT_CURRENCY
+        results.append({
+            "date": date,
+            "description": desc,
+            "amount": _normalize_amount(amt),
+            "currency": cur,
+            "category": None,
+            "type": _infer_type(amt),
+        })
+    return results
+
+def extract_transactions(pdf_bytes: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Returns (transactions, meta)
+    meta: {"extraction_method": "...", "extraction_quality": "...", "warnings": []}
+    """
+    warnings: List[str] = []
     try:
-        # Open both pdfplumber and PyMuPDF for robust OCR fallback
-        with pdfplumber.open(pdf_path) as pdf, fitz.open(pdf_path) as doc_fitz:
-            logger.info(f"Opened PDF with {len(pdf.pages)} pages: {pdf_path}")
+        with pdfplumber.open(io=io.BytesIO(pdf_bytes)) as pdf:
+            rows: List[Dict[str, Any]] = []
+            for page in pdf.pages:
+                tables = page.extract_tables() or []
+                for tbl in tables:
+                    rows.extend(_from_table(tbl))
 
-            for page_num, page in enumerate(pdf.pages, start=1):
-                raw = page.extract_text() or ""
-                # detect pages that need OCR:
-                needs_ocr = (
-                    not raw.strip() or
-                    raw.count("(cid:") > 5 or
-                    "�" in raw
-                )
-                if needs_ocr:
-                    logger.info(f"Page {page_num}: falling back to OCR using PyMuPDF rendering")
-                    try:
-                        # Render page to image via PyMuPDF
-                        pix = doc_fitz.load_page(page_num - 1).get_pixmap(dpi=300)
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        raw = pytesseract.image_to_string(img, lang="tur+eng")
-                    except Exception as e:
-                        logger.warning(f"Page {page_num}: OCR fallback failed ({e}), using extracted text")
+            if rows:
+                return rows, {"extraction_method": "tables", "extraction_quality": "high", "warnings": warnings}
 
-                # process lines
-                for line in raw.splitlines():
-                    txt = line.strip()
-                    if not txt:
-                        continue
+            # Fallback: use page text
+            text_rows: List[Dict[str, Any]] = []
+            for page in pdf.pages:
+                text_rows.extend(_from_free_text(page.extract_text() or ""))
 
-                    date_str = None
-                    desc = None
-                    amt_str = None
-
-                    # try bank statement pattern
-                    m = ACCOUNT_LINE_RE.match(txt)
-                    if m:
-                        date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
-                    else:
-                        # try credit card TL or multi patterns
-                        m = CREDIT_TL_RE.match(txt) or CREDIT_MULTI_RE.match(txt)
-                        if m:
-                            date_str, desc, amt_str = m.group(1), m.group(2), m.group(3)
-                        else:
-                            # try Turkish month-name dates
-                            m2 = TEXT_DATE_RE.match(txt)
-                            if not m2:
-                                continue
-                            day, mon, yr, desc, amt_str = (
-                                m2.group(1), m2.group(2), m2.group(3),
-                                m2.group(4), m2.group(5)
-                            )
-                            dt = datetime(int(yr), MONTHS[mon], int(day))
-                            date_str = dt.strftime("%Y-%m-%d")
-
-                    if not date_str or not desc or not amt_str:
-                        continue
-
-                    # normalize date format DD/MM/YYYY → YYYY-MM-DD
-                    if "/" in date_str:
-                        try:
-                            dt = datetime.strptime(date_str, "%d/%m/%Y")
-                            date_str = dt.strftime("%Y-%m-%d")
-                        except ValueError:
-                            pass
-
-                    # Parse amount for transaction type determination
-                    try:
-                        # Quick parse for type determination
-                        temp_amount = float(amt_str.replace(".", "").replace(",", ".").rstrip("+"))
-                        transaction_type = determine_transaction_type(desc, temp_amount)
-                        
-                        # Normalize amount with proper sign
-                        normalized_amount = normalize_amount(amt_str, transaction_type)
-                        
-                        results.append({
-                            "date": date_str,
-                            "description": desc.strip(),
-                            "amount": normalized_amount,  # Now a properly signed string
-                            "currency": DEFAULT_CURRENCY,
-                            "confidence": 0.8,
-                            "transaction_type": transaction_type
-                        })
-                        
-                        logger.debug(f"Extracted: {date_str} | {desc[:30]}... | {normalized_amount} | {transaction_type}")
-                        
-                    except ValueError:
-                        logger.debug(f"Skipping unparsable amount: {amt_str}")
-                        continue
-
-        logger.info(f"Extracted {len(results)} transactions from {pdf_path}")
-        return results
+            if text_rows:
+                return text_rows, {"extraction_method": "text", "extraction_quality": "medium", "warnings": warnings}
 
     except Exception as e:
-        logger.exception(f"Error extracting transactions from {pdf_path}: {e}")
-        return []
+        warnings.append(f"pdfplumber failed: {str(e)}")
+
+    # OCR fallback
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        ocr_rows: List[Dict[str, Any]] = []
+        for page in doc:
+            text = _ocr_page(page)
+            ocr_rows.extend(_from_free_text(text))
+        if ocr_rows:
+            return ocr_rows, {"extraction_method": "ocr", "extraction_quality": "medium", "warnings": warnings}
+    except Exception as e:
+        warnings.append(f"OCR failed: {str(e)}")
+
+    return [], {"extraction_method": "none", "extraction_quality": "low", "warnings": warnings}
