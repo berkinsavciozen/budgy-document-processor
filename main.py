@@ -1,163 +1,215 @@
-# main.py
 import os
-from typing import List, Optional, Any
-from fastapi import FastAPI, File, UploadFile, Header, Request
-from fastapi.middleware.cors import CORSMiddleware
+import time
+import json
+import logging
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, Header, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pdf_extractor import extract_transactions
-from supabase_utils import (
-    download_file_from_supabase,
-    get_user_id_from_bearer,
-    save_transactions_to_db,
-    fetch_user_rules,
-    upsert_user_rules,
+
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("budgy-document-processor")
+
+app = FastAPI(
+    title="Budgy Document Processor",
+    description="External microservice for PDF → transactions extraction",
 )
 
-SERVICE_VERSION = "v0.7.2"
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": (
+        "Authorization, X-Auth-Token, Content-Type, X-Requested-With, "
+        "X-Client-Info, ApiKey, Origin, Accept"
+    ),
+    "Access-Control-Max-Age": "86400",
+}
 
-app = FastAPI(title="Budgy Document Processor", version=SERVICE_VERSION)
 
-CORS_ENABLED = (os.getenv("CORS_ENABLED", "true").lower() == "true")
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
-if CORS_ENABLED:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
+# --- Middleware: append CORS to responses ----------------------------------
 
-class ProcessDocumentRequest(BaseModel):
-    file_path: str
-    bucket_name: str = "documents"
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/process-pdf", "/health"):
+        for k, v in CORS_HEADERS.items():
+            response.headers[k] = v
+    return response
+
+
+# --- Models ----------------------------------------------------------------
+
+class ProcessingResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
     document_id: Optional[str] = None
-    user_id: Optional[str] = None
+    transactions: Optional[List[Dict[str, Any]]] = None
+    transaction_count: int = 0
+    extraction_method: str = Field(default="automatic")
+    extraction_quality: Optional[str] = None
+    processing_time_ms: Optional[int] = None
 
-class TransactionRow(BaseModel):
-    date: Optional[str] = None
-    description: Optional[str] = None
-    amount: Optional[Any] = None
-    currency: Optional[str] = None
-    category: Optional[str] = None
-    category_main: Optional[str] = None
-    category_sub: Optional[str] = None
-    type: Optional[str] = None
-    document_id: Optional[str] = None
 
-class ConfirmTransactionsRequest(BaseModel):
-    file_path: Optional[str] = None
-    document_id: Optional[str] = None
-    user_id: Optional[str] = None
-    transactions: List[TransactionRow]
+# --- Health ----------------------------------------------------------------
 
-class CategoryFeedbackItem(BaseModel):
-    pattern: str
-    category_main: str
-    category_sub: Optional[str] = None
-    weight: Optional[float] = 1.0
-
-class CategoryFeedbackRequest(BaseModel):
-    user_id: Optional[str] = None
-    patterns: List[CategoryFeedbackItem]
-
-@app.get("/health")
+@app.get("/health", response_model=Dict[str, Any])
 def health():
-    return {"ok": True, "service": "budgy-document-processor", "version": SERVICE_VERSION}
+    return {
+        "ok": True,
+        "service": "budgy-document-processor",
+        "version": os.getenv("SERVICE_VERSION", "v1.0.0"),
+    }
 
-@app.options("/{rest_of_path:path}")
-def preflight(rest_of_path: str):
-    return PlainTextResponse("", status_code=204)
 
-@app.post("/process-pdf")
+# --- PDF Processor ---------------------------------------------------------
+
+@app.post("/process-pdf", response_model=ProcessingResponse)
 async def process_pdf(
-    request: Request,
     file: UploadFile = File(...),
-    authorization: Optional[str] = Header(default=None),
+    document_id: str = Form(...),
+    metadata: Optional[str] = Form(None),
+    x_auth_token: Optional[str] = Header(None),
 ):
+    """
+    Main endpoint called by Supabase Edge functions.
+
+    Request (multipart/form-data):
+    - file: PDF file (required)
+    - document_id: string (required)
+    - metadata: JSON string with optional:
+        - currency
+        - bankId
+        - accountId
+        - cardId
+
+    Response (200):
+    {
+      "success": true/false,
+      "document_id": "...",
+      "transactions": [...],
+      "transaction_count": N,
+      "extraction_method": "automatic",
+      "extraction_quality": "high|low",
+      "processing_time_ms": 1234,
+      "message": "..."
+    }
+    """
+    start_time = time.time()
+    temp_file_path: Optional[str] = None
+
     try:
-        user_id = None
-        if authorization and authorization.startswith("Bearer "):
-            user_id = get_user_id_from_bearer(authorization.replace("Bearer ", "").strip())
-        user_rules = fetch_user_rules(user_id) if user_id else []
+        logger.info(f"Received /process-pdf for document_id={document_id}")
+        logger.info(f"File: {file.filename}, content_type={file.content_type}")
 
-        pdf_bytes = await file.read()
-        transactions, meta = extract_transactions(pdf_bytes, user_rules=user_rules)
+        if not file.filename.lower().endswith(".pdf"):
+            logger.warning(f"Invalid file type: {file.filename}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "document_id": document_id,
+                    "transactions": [],
+                    "transaction_count": 0,
+                    "extraction_method": "automatic",
+                    "extraction_quality": "low",
+                    "processing_time_ms": int((time.time() - start_time) * 1000),
+                    "message": "Only PDF files are supported",
+                },
+                headers=CORS_HEADERS,
+            )
 
-        return {
-            "success": True,
-            "transactions": transactions,
-            "extraction_method": meta.get("extraction_method"),
-            "extraction_quality": meta.get("extraction_quality"),
-            "warnings": meta.get("warnings", []),
-            "processor_version": SERVICE_VERSION,
-            "message": "Processing completed",
-        }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "error": "PROCESS_PDF_FAILED", "details": str(e)})
+        # Parse metadata JSON if provided
+        metadata_dict: Dict[str, Any] = {}
+        if metadata:
+            try:
+                metadata_dict = json.loads(metadata)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid metadata JSON: {metadata}")
+                metadata_dict = {}
 
-@app.post("/process-document")
-async def process_document(body: ProcessDocumentRequest):
-    try:
-        user_rules = fetch_user_rules(body.user_id) if body.user_id else []
-        pdf_bytes = download_file_from_supabase(body.file_path, bucket=body.bucket_name)
-        if not pdf_bytes:
-            return JSONResponse(status_code=404, content={"success": False, "error": "FILE_NOT_FOUND", "file_path": body.file_path})
+        # Save to a temp file for pdfplumber / PyMuPDF
+        temp_dir = os.getenv("TEMP_DIR", "/tmp")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_file_path = os.path.join(temp_dir, f"upload_{document_id}.pdf")
 
-        transactions, meta = extract_transactions(pdf_bytes, user_rules=user_rules)
-        return {
-            "success": True,
-            "document_id": body.document_id,
-            "file_path": body.file_path,
-            "transactions": transactions,
-            "extraction_method": meta.get("extraction_method"),
-            "extraction_quality": meta.get("extraction_quality"),
-            "warnings": meta.get("warnings", []),
-            "processor_version": SERVICE_VERSION,
-            "message": "Processing completed",
-        }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "error": "PROCESS_DOCUMENT_FAILED", "details": str(e)})
+        contents = await file.read()
+        with open(temp_file_path, "wb") as f_out:
+            f_out.write(contents)
+        logger.info(f"Saved temporary PDF to {temp_file_path} ({len(contents)} bytes)")
 
-@app.post("/confirm-transactions")
-async def confirm_transactions(
-    body: ConfirmTransactionsRequest,
-    authorization: Optional[str] = Header(default=None),
-):
-    try:
-        resolved_user_id = body.user_id
-        if not resolved_user_id and authorization and authorization.startswith("Bearer "):
-            token = authorization.replace("Bearer ", "").strip()
-            resolved_user_id = get_user_id_from_bearer(token)
-        if not resolved_user_id:
-            return JSONResponse(status_code=401, content={"success": False, "error": "UNAUTHORIZED", "details": "User id not resolved"})
+        # Extract transactions
+        transactions = extract_transactions(temp_file_path, metadata_dict)
+        num_transactions = len(transactions)
 
-        inserted = save_transactions_to_db(
-            [t.model_dump() for t in body.transactions],
-            file_path=(body.file_path or ""),
-            user_id=resolved_user_id,
-            document_id=body.document_id,
+        processing_time = int((time.time() - start_time) * 1000)
+        quality = "high" if num_transactions > 0 else "low"
+
+        logger.info(
+            f"Extraction completed for document_id={document_id}: "
+            f"{num_transactions} transactions in {processing_time} ms"
         )
-        return {"success": True, "inserted_count": inserted, "user_id": resolved_user_id}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "error": "CONFIRM_TRANSACTIONS_FAILED", "details": str(e)})
 
-@app.post("/category-feedback")
-async def category_feedback(
-    body: CategoryFeedbackRequest,
-    authorization: Optional[str] = Header(default=None),
-):
-    try:
-        user_id = body.user_id
-        if not user_id and authorization and authorization.startswith("Bearer "):
-            user_id = get_user_id_from_bearer(authorization.replace("Bearer ", "").strip())
-        if not user_id:
-            return JSONResponse(status_code=401, content={"success": False, "error": "UNAUTHORIZED", "details": "User id not resolved"})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "document_id": document_id,
+                "transactions": transactions,
+                "transaction_count": num_transactions,
+                "extraction_method": "automatic",
+                "extraction_quality": quality,
+                "processing_time_ms": processing_time,
+                "message": f"Successfully extracted {num_transactions} transactions"
+                if num_transactions
+                else "Document processed but no transactions could be extracted",
+            },
+            headers=CORS_HEADERS,
+        )
 
-        count = upsert_user_rules(user_id, [p.model_dump() for p in body.patterns])
-        return {"success": True, "upserted": count}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "error": "CATEGORY_FEEDBACK_FAILED", "details": str(e)})
+    except Exception as exc:
+        processing_time = int((time.time() - start_time) * 1000)
+        logger.exception(f"Error while processing document_id={document_id}: {exc}")
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "document_id": document_id,
+                "transactions": [],
+                "transaction_count": 0,
+                "extraction_method": "automatic",
+                "extraction_quality": "low",
+                "processing_time_ms": processing_time,
+                "message": f"Failed to process document: {str(exc)}",
+            },
+            headers=CORS_HEADERS,
+        )
+
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove temp file {temp_file_path}: {e}")
+
+
+# --- Root route (optional) -------------------------------------------------
+
+@app.get("/", response_class=PlainTextResponse)
+def root():
+    return "Budgy Document Processor – see /health and POST /process-pdf"
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
