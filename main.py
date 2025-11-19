@@ -37,7 +37,8 @@ class TransactionRow(BaseModel):
     description: str
     amount: float
     currency: str = "TRY"
-    type: str = Field(..., regex="^(income|expense)$")
+    # FIX: Changed 'regex' to 'pattern' for Pydantic V2 compatibility
+    type: str = Field(..., pattern="^(income|expense)$") 
     category_main: Optional[str] = "Miscellaneous"
     category_sub: Optional[str] = "Unplanned Purchases"
     source: Optional[str] = "credit_card_statement"
@@ -104,7 +105,6 @@ def _extract_and_enrich(
     for r in raw_rows:
         try:
             # 2. Auto-Categorize based on Description and Amount
-            # Pass the signed amount so categorizer knows if it's payment vs expense
             cat_main, cat_sub = categorize(r["description"], r["amount"])
             
             # 3. Create Model
