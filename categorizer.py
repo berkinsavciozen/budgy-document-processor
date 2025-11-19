@@ -12,6 +12,27 @@ _MCC_RX  = re.compile(r'\bMCC\W?(\d{4})\b', re.IGNORECASE)
 def _norm(s: Optional[str]) -> str:
     return (s or "").strip().lower()
 
+# -------- Self-learning rule shape (Placeholder, currently unused in core logic) --------
+def _by_user_rules(desc_lc: str, user_rules: Optional[List[Dict]]) -> Optional[Tuple[str, str]]:
+    if not user_rules:
+        return None
+    hits = []
+    for r in user_rules:
+        p = _norm(r.get("pattern"))
+        if p and p in desc_lc:
+            hits.append((len(p), r.get("category_main"), r.get("category_sub"), r.get("weight") or 1.0))
+    if not hits:
+        return None
+    # sort by longest pattern then weight
+    hits.sort(key=lambda t: (t[0], t[3]), reverse=True)
+    return hits[0][1], hits[0][2]
+
+def _by_mcc(desc_lc: str) -> Optional[Tuple[str, str]]:
+    m = _MCC_RX.search(desc_lc)
+    if not m:
+        return None
+    return MCC_MAP.get(m.group(1))
+
 def _by_keywords(desc_lc: str) -> Optional[Tuple[str, str]]:
     hits = []
     for k, v in KEYWORD_MAP.items():
@@ -32,15 +53,14 @@ def _by_rules(desc_lc: str, amount: float) -> Optional[Tuple[str, str]]:
         return ("Taxes & Fees", "Service Charges")
 
     # 2. PAYMENTS TO CARD (Negative amount on statement)
-    # If amount is negative and description contains "ödeme" or "tahsilat"
     if amount < 0 and ("ödeme" in desc_lc or "tahsilat" in desc_lc or "cep şubesi" in desc_lc):
         return ("Debts & Liabilities", "Credit Card Payment")
 
     # 3. TRANSFERS
     if "eft" in desc_lc or "havale" in desc_lc or "fast" in desc_lc or _IBAN_RX.search(desc_lc):
         if amount < 0:
-            return ("Incomes", "Refunds & Adjustments") # Incoming logic
-        return ("Debts & Liabilities", "Loan Payment") # Outgoing logic
+            return ("Refunds & Adjustments", "Purchase Refunds") # Incoming logic (Transfer credit)
+        return ("Debts & Liabilities", "Loan Payment") # Outgoing logic (Transfer debit)
 
     # 4. CASH
     if "nakit" in desc_lc or "atm" in desc_lc:
