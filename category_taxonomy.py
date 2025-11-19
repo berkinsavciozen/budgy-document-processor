@@ -1,4 +1,5 @@
 # category_taxonomy.py
+# Canonical taxonomy (Income + Expense) with sub-categories
 
 INCOME_MAIN = [
     "Salary & Wages",
@@ -72,7 +73,6 @@ MCC_MAP = {
 }
 
 # Keyword aliases (TR+EN) -> (main, sub)
-# Ordering matters: specific matches before general ones
 KEYWORD_MAP = {
     # --- Specific Vendors from your PDF ---
     "tiktak": ("Transportation", "Ride-Hailing"),
@@ -84,7 +84,7 @@ KEYWORD_MAP = {
     "yemek sepeti": ("Food & Groceries", "Dining Out"),
     "s sport": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "nomupa": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
-    "iyzico": ("Shopping & Personal Care", "Electronics"), # General payment processor, assumption
+    "iyzico": ("Shopping & Personal Care", "Electronics"), 
     "amazon": ("Shopping & Personal Care", "Electronics"),
     "enpara.com cep": ("Debts & Liabilities", "Credit Card Payment"), # Internal transfer/payment
     
@@ -165,5 +165,5 @@ KEYWORD_MAP = {
     "bsmv": ("Taxes & Fees", "Income Tax"),
     "kkdf": ("Taxes & Fees", "Income Tax"),
     "vergi": ("Taxes & Fees", "Income Tax"),
-    "faiz": ("Debts & Liabilities", "Overdraft Fees"), # Interest
+    "faiz": ("Debts & Liabilities", "Overdraft Fees"), 
 }
