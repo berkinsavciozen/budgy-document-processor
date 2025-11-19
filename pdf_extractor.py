@@ -29,7 +29,7 @@ REPLACEMENTS = [
     ("deme", "Ödeme"),
     ("ubesi", "Şubesi"),
     ("cret", "Ücret"),
-    ("Alıveri", "Alışveriş"), # Correcting this common OCR error
+    ("Alıveri", "Alışveriş"), # FIX: Corrected typo from 'Alıveri' to 'Alışveriş'
     ("TKTAKKRAL", "TIKTAKKIRAL"),
     ("STANBUL", "ISTANBUL"),
 ]
