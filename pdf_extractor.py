@@ -24,7 +24,7 @@ CID_MAP = {
     "(cid:22)": "ğ",
 }
 
-# General string replacements (moved out of CID_MAP)
+# General string replacements (a list of tuples, old: new)
 REPLACEMENTS = [
     ("deme", "Ödeme"),
     ("ubesi", "Şubesi"),
@@ -57,17 +57,20 @@ def _clean_pdf_text(text: str) -> str:
     """
     Fix encoding artifacts and normalize whitespace.
     """
-    # 1. Fix CIDs
+    # 1. Fix CIDs (from dictionary)
     for cid, char in CID_MAP.items():
         text = text.replace(cid, char)
 
-    # 2. Fix known encoding/OCR issues
+    # 2. Fix known encoding/OCR issues (from list of tuples)
     for old, new in REPLACEMENTS:
         text = text.replace(old, new)
     
     # 3. Generic CID remover if any left
     text = re.sub(r"\(cid:\d+\)", "", text)
     
+    # NEW FIX: Remove all ASCII control characters (0-31 and 127), including '\b'
+    text = re.sub(r'[\x00-\x1F\x7F]', '', text)
+
     # 4. Handle remaining ''
     text = text.replace("", "")
     
