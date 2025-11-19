@@ -68,7 +68,7 @@ def _clean_pdf_text(text: str) -> str:
     # 3. Generic CID remover if any left
     text = re.sub(r"\(cid:\d+\)", "", text)
     
-    # NEW FIX: Remove all ASCII control characters (0-31 and 127), including '\b'
+    # FIX: Remove all ASCII control characters (0-31 and 127), which includes '\b'
     text = re.sub(r'[\x00-\x1F\x7F]', '', text)
 
     # 4. Handle remaining ''
