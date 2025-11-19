@@ -1,9 +1,15 @@
-
 services:
   - type: web
     name: budgy-document-processor
     env: python
-    buildCommand: pip install -r requirements.txt
+    # UPDATED: Add apt-get commands to install system dependencies (poppler and tesseract)
+    # This ensures pdf2image and pytesseract have their required native tools.
+    buildCommand: |
+      apt-get update && apt-get install -y \
+      build-essential \
+      poppler-utils \
+      tesseract-ocr \
+      && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     plan: free
@@ -36,17 +42,9 @@ services:
         value: "*"
         sync: false
       - key: CORS_ENABLED
-
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: SUPABASE_ANON_KEY
+        value: "true"
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         sync: false
       - key: SUPABASE_TRANSACTIONS_TABLE
-        sync: false
-
-        value: "true"
         sync: false
