@@ -92,6 +92,10 @@ def _extract_and_enrich(
     Extracts, Categorizes, and Enriches.
     """
     meta = meta or {}
+
+    def safe_str(val: Optional[str]) -> str:
+        """Converts None to empty string to prevent downstream JS/TS errors from 'null' JSON values."""
+        return val if val is not None else ""
     
     # 1. Extract raw data
     try:
@@ -117,13 +121,13 @@ def _extract_and_enrich(
                 category_main=cat_main,
                 category_sub=cat_sub,
                 source=r.get("source", "credit_card_statement"),
-                # Pass through IDs for Budgi AI linking
-                bank_id=meta.get("bank_id"),
-                account_id=meta.get("account_id"),
-                card_id=meta.get("card_id"),
-                document_id=meta.get("document_id"),
-                file_path=file_path,
-                user_profile_id=meta.get("user_profile_id"),
+                # Pass through IDs using safe_str
+                bank_id=safe_str(meta.get("bank_id")),
+                account_id=safe_str(meta.get("account_id")),
+                card_id=safe_str(meta.get("card_id")),
+                document_id=safe_str(meta.get("document_id")),
+                file_path=safe_str(file_path),
+                user_profile_id=safe_str(meta.get("user_profile_id")),
             )
             transactions.append(tx)
         except Exception as e:
