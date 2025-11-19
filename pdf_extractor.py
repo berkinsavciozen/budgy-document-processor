@@ -7,152 +7,181 @@ import fitz  # PyMuPDF
 
 logger = logging.getLogger("budgy-document-processor.pdf_extractor")
 
+# Mapping for bad PDF encoding commonly found in TR bank statements (Identity-H)
+CID_MAP = {
+    "(cid:3)": " ",
+    "(cid:4)": "ı",
+    "(cid:10)": "İ",
+    "(cid:12)": "ş",
+    "(cid:13)": "ü",
+    "(cid:19)": "ç",
+    "(cid:23)": "ğ",
+    "(cid:24)": "ö",
+    "(cid:0)": "Ö", # Sometimes appears as bullet or O-umlaut
+    "(cid:8)": "Ö",
+    "(cid:9)": "Ş", 
+    "(cid:68)": "Ü",
+    "(cid:22)": "ğ",
+}
 
-DATE_PATTERN = re.compile(r"(\d{2}/\d{2}/\d{4})")
-TRANSACTION_PATTERN = re.compile(
-    r"(\d{2}/\d{2}/\d{4})\|([^|]+?)\| *(-?\s?[\d\.]+,\d{2}) TL"
-)
-
-
-# --- CLEANUP HELPERS ---
-
-
-REPLACEMENTS = [
-    ("�deme", "Ödeme"),
-    ("�ubesi", "Şubesi"),
-    ("�cret", "Ücret"),
-    ("Alı�veri�", "Alışveriş"),
-    ("T�KTAKK�RAL", "TIKTAKKIRAL"),
-    ("�STANBUL", "ISTANBUL"),
-    ("NOMUPA", "NOMUPA"),  # keep brand as-is, just for completeness
-]
-
-
-SUMMARY_KEYWORDS = [
+# Rows to explicitly ignore (Summary table headers/content)
+IGNORE_PHRASES = [
     "ekstre borcu",
-    "dönem özeti",
-    "dönem toplamı",
-    "hesap özeti",
-    "önceki dönem bakiyesi",
+    "minimum ödeme",
+    "son ödeme",
+    "limit",
+    "önceki dönem",
+    "devreden",
+    "toplam",
+    "sayfa",
+    "taksit", # Header row
+    "işlem tarihi" # Header row
 ]
 
-
-def _clean_description(desc: str) -> str:
-    text = desc.replace("\n", " ").replace("|", " ")
-    for old, new in REPLACEMENTS:
-        text = text.replace(old, new)
-
-    # Some remaining "�" characters – best effort: drop them
-    text = text.replace("�", "")
-
-    # Collapse spaces
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
+def _clean_pdf_text(text: str) -> str:
+    """
+    Fix encoding artifacts and normalize whitespace.
+    """
+    # 1. Fix CIDs
+    for cid, char in CID_MAP.items():
+        text = text.replace(cid, char)
+    
+    # 2. Generic CID remover if any left
+    text = re.sub(r"\(cid:\d+\)", "", text)
+    
+    # 3. Whitespace cleanup
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 def _parse_tr_amount(amount_str: str) -> float:
     """
-    Convert strings like '1.582,18' or '- 500,00' to float.
+    Convert '1.582,18 TL' -> 1582.18
+    Convert '- 500,00 TL' -> -500.00
     """
-    s = amount_str.replace(" ", "").replace("\u00a0", "")
-    negative = s.startswith("-")
-    s = s.lstrip("-")
-    s = s.replace(".", "")
-    integer, frac = s.split(",")
-    value = float(f"{integer}.{frac}")
-    return -value if negative else value
-
+    # Remove TL and spaces
+    s = amount_str.upper().replace("TL", "").strip()
+    # Handle negative sign with space '- 500'
+    negative = False
+    if s.startswith("-"):
+        negative = True
+        s = s[1:].strip()
+    
+    # Remove thousands separator dot, replace decimal comma with dot
+    s = s.replace(".", "").replace(",", ".")
+    
+    try:
+        val = float(s)
+        return -val if negative else val
+    except ValueError:
+        return 0.0
 
 def _to_iso_date(tr_date: str) -> str:
     """
     Convert '02/11/2024' -> '2024-11-02'
     """
-    day, month, year = tr_date.split("/")
-    return dt.date(int(year), int(month), int(day)).isoformat()
-
-
-def _is_summary_row(desc: str) -> bool:
-    lowered = desc.lower()
-    return any(keyword in lowered for keyword in SUMMARY_KEYWORDS)
-
-
-def _classify_type(description: str, amount: float) -> str:
-    """
-    Classify as 'expense' or 'income'.
-
-    Strategy (aligned with credit card statements like Enpara):
-    - Card charges / interest → positive amounts → EXPENSE
-    - Payments / refunds → negative amounts → INCOME
-
-    You can refine this later with category-specific rules if needed.
-    """
-    if amount < 0:
-        return "income"
-    else:
-        return "expense"
-
-
-# --- MAIN PUBLIC FUNCTION ---
-
+    try:
+        day, month, year = tr_date.split("/")
+        return dt.date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return tr_date
 
 def extract_transactions_from_pdf(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     """
-    Extract transactions from a TR credit card statement PDF.
-
-    This is tuned for Enpara-style statements (like your sample):
-    Each transaction appears in the text as:
-        DD/MM/YYYY|<DESCRIPTION>| <AMOUNT> TL
-    and the whole page is turned into a single '|' separated string.
-
-    Returns a list of dicts with fields:
-        date (YYYY-MM-DD), description, amount (positive),
-        currency ('TRY'), type ('income'/'expense'), source, ...
+    Robust extraction for Enpara/TR Credit Card statements.
+    Strategy: Line-by-line parsing. 
+    A transaction block starts with a DATE and ends with an AMOUNT.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     all_transactions: List[Dict[str, Any]] = []
+    
+    # Regex to identify start of a row (Date)
+    date_re = re.compile(r"^(\d{2}/\d{2}/\d{4})")
+    # Regex to identify end of a row (Amount + TL)
+    amount_re = re.compile(r"(-? ?[\d\.]+,\d{2}) ?TL$")
 
-    for page_index, page in enumerate(doc):
-        raw_text = page.get_text()
-        if not raw_text:
-            continue
+    for page in doc:
+        # Get text blocks to preserve some structure
+        blocks = page.get_text("blocks")
+        # Sort blocks by vertical position (top to bottom)
+        blocks.sort(key=lambda b: b[1])
+        
+        for b in blocks:
+            # b[4] is the text content of the block
+            raw_text = b[4]
+            clean_lines = []
+            
+            # Pre-process lines in the block
+            for line in raw_text.split('\n'):
+                cleaned = _clean_pdf_text(line)
+                if cleaned:
+                    clean_lines.append(cleaned)
+            
+            # Parse lines statefully
+            current_tx = {}
+            
+            i = 0
+            while i < len(clean_lines):
+                line = clean_lines[i]
+                
+                # Check for Date Start
+                date_match = date_re.match(line)
+                if date_match:
+                    # If we were building a previous transaction without an amount, discard it (it was likely garbage)
+                    current_tx = {
+                        "date": _to_iso_date(date_match.group(1)),
+                        "description_parts": [],
+                        "amount": None
+                    }
+                    
+                    # The rest of this line might contain description text
+                    remainder = line[len(date_match.group(0)):].strip()
+                    if remainder:
+                        current_tx["description_parts"].append(remainder)
+                    
+                    i += 1
+                    continue
 
-        text = raw_text.replace("\n", "|")
-        matches = TRANSACTION_PATTERN.findall(text)
+                # If we are inside a transaction, look for description or amount
+                if current_tx:
+                    # Check for Amount (End of transaction)
+                    amt_match = amount_re.search(line)
+                    if amt_match:
+                        # Found amount. Capture it.
+                        raw_amt = amt_match.group(1)
+                        # Sometimes description text is before the amount on the same line
+                        desc_part = line[:amt_match.start()].strip()
+                        if desc_part:
+                            current_tx["description_parts"].append(desc_part)
+                        
+                        # Finalize Transaction
+                        full_desc = " ".join(current_tx["description_parts"])
+                        
+                        # Filter summary rows
+                        if not any(ignored in full_desc.lower() for ignored in IGNORE_PHRASES):
+                            # Parse Amount
+                            amount_val = _parse_tr_amount(raw_amt)
+                            
+                            # Determine Type based on Amount Sign
+                            # Positive = Expense, Negative = Income/Payment
+                            tx_type = "expense" if amount_val > 0 else "income"
+                            
+                            all_transactions.append({
+                                "date": current_tx["date"],
+                                "description": full_desc,
+                                "amount": amount_val, # Keep signed float
+                                "currency": "TRY",
+                                "type": tx_type,
+                                "source": "credit_card_statement"
+                            })
+                        
+                        # Reset
+                        current_tx = {}
+                    else:
+                        # Just a description line
+                        current_tx["description_parts"].append(line)
+                
+                i += 1
 
-        logger.info("Page %d: found %d transaction candidates", page_index, len(matches))
-
-        for tr_date, raw_desc, raw_amount in matches:
-            desc = _clean_description(raw_desc)
-            if not desc or _is_summary_row(desc):
-                # Skip summary lines like 'Ekstre borcu'
-                continue
-
-            try:
-                amount = _parse_tr_amount(raw_amount)
-            except Exception as exc:
-                logger.warning(
-                    "Skipping row due to amount parse error: '%s' (%s)", raw_amount, exc
-                )
-                continue
-
-            # Classification and normalisation
-            tx_type = _classify_type(desc, amount)
-            iso_date = _to_iso_date(tr_date)
-
-            transaction = {
-                "date": iso_date,
-                "description": desc,
-                # we store absolute amount and use 'type' for direction
-                "amount": abs(amount),
-                "currency": "TRY",
-                "type": tx_type,
-                "category_main": None,
-                "category_sub": None,
-                "source": "credit_card_statement",
-            }
-
-            all_transactions.append(transaction)
-
-    # Sort ascending then let API sort if needed; here we keep natural ascending
-    all_transactions.sort(key=lambda t: t["date"])
+    # Sort by date descending (newest first)
+    all_transactions.sort(key=lambda t: t["date"], reverse=True)
     return all_transactions
