@@ -101,11 +101,6 @@ def _build_storage_url_from_path(file_path: str) -> str:
 def download_file_from_supabase(file_path: str) -> Optional[bytes]:
     """
     Download a PDF from Supabase Storage.
-
-    file_path can be:
-    - raw public URL
-    - 'bucket/path/file.pdf'
-    - 'path/file.pdf' when SUPABASE_STORAGE_BUCKET is set
     """
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         logger.error("Supabase environment variables are missing")
@@ -142,7 +137,7 @@ def download_file_from_supabase(file_path: str) -> Optional[bytes]:
 def save_transactions_to_db(transactions: List[Dict[str, Any]]) -> int:
     """
     Insert confirmed transactions into Supabase REST table.
-    Returns the number of rows we *attempted* to insert (not strictly confirmed).
+    Returns the number of rows we *attempted* to insert.
     """
     if not transactions:
         return 0
