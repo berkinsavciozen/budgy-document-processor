@@ -72,15 +72,13 @@ MCC_MAP = {
 }
 
 # Keyword aliases (TR+EN) -> (main, sub)
-# Ordering matters: specific matches before general ones
 KEYWORD_MAP = {
-    # --- Specific Vendors from your PDF ---
+    # --- Specific Vendors from your PDF and Fixes ---
     "tiktak": ("Transportation", "Ride-Hailing"),
     "tik tak": ("Transportation", "Ride-Hailing"),
     "tiktakkiral": ("Transportation", "Ride-Hailing"),
-    # FIX: Catch partial name for TIKTAK/PARAT
-    "t ktakk ral": ("Transportation", "Ride-Hailing"), 
-    "tktakkıral": ("Transportation", "Ride-Hailing"), 
+    "t ktakk ral": ("Transportation", "Ride-Hailing"), # FIX 1: Fragmented name for TIKTAK
+    "tktakkıral": ("Transportation", "Ride-Hailing"), # FIX 2: Fragmented name for TIKTAK
     
     "papara": ("Debts & Liabilities", "Loan Payment"), 
     "getir": ("Food & Groceries", "Groceries"),
