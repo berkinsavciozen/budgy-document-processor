@@ -22,14 +22,17 @@ CID_MAP = {
     "(cid:9)": "Ş", 
     "(cid:68)": "Ü",
     "(cid:22)": "ğ",
-    # Add other common cleanups seen in the original code
+}
+
+# General string replacements (moved out of CID_MAP)
+REPLACEMENTS = [
     ("deme", "Ödeme"),
     ("ubesi", "Şubesi"),
     ("cret", "Ücret"),
     ("Alıveri", "Alışveriş"),
     ("TKTAKKRAL", "TIKTAKKIRAL"),
     ("STANBUL", "ISTANBUL"),
-}
+]
 
 # Rows to explicitly ignore (Summary table headers/content)
 IGNORE_PHRASES = [
@@ -54,20 +57,21 @@ def _clean_pdf_text(text: str) -> str:
     """
     Fix encoding artifacts and normalize whitespace.
     """
-    # 1. Fix CIDs/Bad encoding
-    for old, new in CID_MAP.items():
-        if isinstance(old, tuple):
-            text = text.replace(old[0], old[1])
-        else:
-            text = text.replace(old, new)
+    # 1. Fix CIDs
+    for cid, char in CID_MAP.items():
+        text = text.replace(cid, char)
 
-    # 2. Generic CID remover if any left
+    # 2. Fix known encoding/OCR issues
+    for old, new in REPLACEMENTS:
+        text = text.replace(old, new)
+    
+    # 3. Generic CID remover if any left
     text = re.sub(r"\(cid:\d+\)", "", text)
     
-    # 3. Handle remaining ''
+    # 4. Handle remaining ''
     text = text.replace("", "")
     
-    # 4. Whitespace cleanup
+    # 5. Whitespace cleanup
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
