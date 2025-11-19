@@ -44,12 +44,13 @@ class TransactionRow(BaseModel):
     source: Optional[str] = "credit_card_statement"
 
     # Meta fields for Budgi AI
-    bank_id: Optional[str] = None
-    account_id: Optional[str] = None
-    card_id: Optional[str] = None
-    document_id: Optional[str] = None
-    file_path: Optional[str] = None
-    user_profile_id: Optional[str] = None
+    # By setting defaults to "" instead of None, we ensure these fields are always present as strings
+    bank_id: str = Field("", description="Bank/Financial Instrument ID")
+    account_id: str = Field("", description="Account ID")
+    card_id: str = Field("", description="Card ID")
+    document_id: str = Field("", description="Document ID")
+    file_path: str = Field("", description="File storage path")
+    user_profile_id: str = Field("", description="User profile ID")
 
     @validator("date")
     def validate_date(cls, v: str) -> str:
@@ -83,6 +84,11 @@ class ConfirmTransactionsRequest(BaseModel):
 
 # ---------- HELPERS ----------
 
+# Helper function to convert None to ""
+def _safe_str(val: Optional[str]) -> str:
+    """Converts None to empty string to prevent downstream JS/TS errors from 'null' JSON values."""
+    return val if val is not None else ""
+
 def _extract_and_enrich(
     pdf_bytes: bytes,
     file_path: Optional[str] = None,
@@ -92,10 +98,6 @@ def _extract_and_enrich(
     Extracts, Categorizes, and Enriches.
     """
     meta = meta or {}
-
-    def safe_str(val: Optional[str]) -> str:
-        """Converts None to empty string to prevent downstream JS/TS errors from 'null' JSON values."""
-        return val if val is not None else ""
     
     # 1. Extract raw data
     try:
@@ -112,22 +114,24 @@ def _extract_and_enrich(
             cat_main, cat_sub = categorize(r["description"], r["amount"])
             
             # 3. Create Model
+            # Note: We pass raw string values from metadata, which are handled by the Pydantic model's 
+            # Field defaults (now set to "") to convert None->"" defensively.
             tx = TransactionRow(
                 date=r["date"],
                 description=r["description"],
-                amount=r["amount"], # Signed amount
+                amount=r["amount"], # Signed amount is correct for CC statement logic
                 currency=r.get("currency", "TRY"),
                 type=r["type"], # income/expense derived in extractor
                 category_main=cat_main,
                 category_sub=cat_sub,
                 source=r.get("source", "credit_card_statement"),
-                # Pass through IDs using safe_str
-                bank_id=safe_str(meta.get("bank_id")),
-                account_id=safe_str(meta.get("account_id")),
-                card_id=safe_str(meta.get("card_id")),
-                document_id=safe_str(meta.get("document_id")),
-                file_path=safe_str(file_path),
-                user_profile_id=safe_str(meta.get("user_profile_id")),
+                # Pass through IDs which will be handled by Pydantic defaults (None -> "")
+                bank_id=meta.get("bank_id"),
+                account_id=meta.get("account_id"),
+                card_id=meta.get("card_id"),
+                document_id=meta.get("document_id"),
+                file_path=file_path,
+                user_profile_id=meta.get("user_profile_id"),
             )
             transactions.append(tx)
         except Exception as e:
@@ -178,8 +182,8 @@ async def process_pdf(
     return ProcessedDocumentResponse(
         transactions=transactions,
         processor_version="1.1.0",
-        file_path=file.filename,
-        document_id=document_id,
+        file_path=_safe_str(file.filename),
+        document_id=_safe_str(document_id),
     )
 
 @app.post("/process-document", response_model=ProcessedDocumentResponse)
@@ -211,8 +215,8 @@ async def process_document(
     return ProcessedDocumentResponse(
         transactions=transactions,
         processor_version="1.1.0",
-        file_path=body.file_path,
-        document_id=body.document_id,
+        file_path=_safe_str(body.file_path),
+        document_id=_safe_str(body.document_id),
     )
 
 @app.post("/confirm-transactions")
@@ -234,12 +238,13 @@ async def confirm_transactions(
 
     transactions_payload: List[Dict[str, Any]] = []
     for tx in body.transactions:
+        # tx.dict() will now convert fields that were None when initialized to ""
         tx_dict = tx.dict()
         tx_dict["user_id"] = user_id
-        tx_dict["file_path"] = body.file_path
+        tx_dict["file_path"] = _safe_str(body.file_path) # Ensure top-level file_path is safe
         # Ensure IDs are passed to DB
-        tx_dict["document_id"] = body.document_id or tx_dict.get("document_id")
-        tx_dict["user_profile_id"] = body.user_profile_id or tx_dict.get("user_profile_id")
+        tx_dict["document_id"] = _safe_str(body.document_id) or tx_dict.get("document_id")
+        tx_dict["user_profile_id"] = _safe_str(body.user_profile_id) or tx_dict.get("user_profile_id")
         transactions_payload.append(tx_dict)
 
     try:
@@ -252,7 +257,7 @@ async def confirm_transactions(
         {
             "status": "ok",
             "inserted": inserted_count,
-            "file_path": body.file_path,
-            "document_id": body.document_id,
+            "file_path": _safe_str(body.file_path),
+            "document_id": _safe_str(body.document_id),
         }
     )
