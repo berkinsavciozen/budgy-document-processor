@@ -1,5 +1,4 @@
 # category_taxonomy.py
-# Canonical taxonomy (Income + Expense) with sub-categories
 
 INCOME_MAIN = [
     "Salary & Wages",
@@ -73,12 +72,17 @@ MCC_MAP = {
 }
 
 # Keyword aliases (TR+EN) -> (main, sub)
+# Ordering matters: specific matches before general ones
 KEYWORD_MAP = {
     # --- Specific Vendors from your PDF ---
     "tiktak": ("Transportation", "Ride-Hailing"),
     "tik tak": ("Transportation", "Ride-Hailing"),
     "tiktakkiral": ("Transportation", "Ride-Hailing"),
-    "papara": ("Debts & Liabilities", "Loan Payment"), # Often transfers
+    # FIX: Catch partial name for TIKTAK/PARAT
+    "t ktakk ral": ("Transportation", "Ride-Hailing"), 
+    "tktakkıral": ("Transportation", "Ride-Hailing"), 
+    
+    "papara": ("Debts & Liabilities", "Loan Payment"), 
     "getir": ("Food & Groceries", "Groceries"),
     "yemeksepeti": ("Food & Groceries", "Dining Out"),
     "yemek sepeti": ("Food & Groceries", "Dining Out"),
@@ -86,7 +90,7 @@ KEYWORD_MAP = {
     "nomupa": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "iyzico": ("Shopping & Personal Care", "Electronics"), 
     "amazon": ("Shopping & Personal Care", "Electronics"),
-    "enpara.com cep": ("Debts & Liabilities", "Credit Card Payment"), # Internal transfer/payment
+    "enpara.com cep": ("Debts & Liabilities", "Credit Card Payment"), 
     
     # --- General ---
     "migros": ("Food & Groceries", "Groceries"),
