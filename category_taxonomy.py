@@ -1,5 +1,4 @@
 # category_taxonomy.py
-# Canonical taxonomy (Income + Expense) with sub-categories
 
 INCOME_MAIN = [
     "Salary & Wages",
@@ -16,7 +15,7 @@ INCOME_SUB = {
     "Salary & Wages": ["Base Salary", "Bonuses", "Overtime", "Commissions", "Tips"],
     "Business & Freelance": ["Client Payments", "Project Income", "Consulting Fees", "Sales Revenue"],
     "Investments": ["Dividends", "Interest Income", "Capital Gains", "Bond Income"],
-    "Rental & Property": ["Residential Rent", "Commercial Rent", "Short-Term Rental (e.g., Airbnb)"],
+    "Rental & Property": ["Residential Rent", "Commercial Rent", "Short-Term Rental"],
     "Government & Benefits": ["Pension", "Unemployment Benefits", "Child Support", "Social Security"],
     "Gifts & Grants": ["Monetary Gifts", "Scholarships", "Grants", "Inheritance"],
     "Refunds & Adjustments": ["Tax Refunds", "Purchase Refunds", "Cashback"],
@@ -61,7 +60,6 @@ EXPENSE_SUB = {
 
 ALL_MAIN = INCOME_MAIN + EXPENSE_MAIN
 
-# Minimal MCC → (main, sub) mapping (extend as needed)
 MCC_MAP = {
     "5411": ("Food & Groceries", "Groceries"),
     "5541": ("Transportation", "Fuel"),
@@ -73,18 +71,31 @@ MCC_MAP = {
     "5732": ("Shopping & Personal Care", "Electronics"),
 }
 
-# Keyword aliases (TR+EN) → (main, sub). Longest-substring wins.
+# Keyword aliases (TR+EN) -> (main, sub)
+# Ordering matters: specific matches before general ones
 KEYWORD_MAP = {
-    # Food & Groceries
+    # --- Specific Vendors from your PDF ---
+    "tiktak": ("Transportation", "Ride-Hailing"),
+    "tik tak": ("Transportation", "Ride-Hailing"),
+    "tiktakkiral": ("Transportation", "Ride-Hailing"),
+    "papara": ("Debts & Liabilities", "Loan Payment"), # Often transfers
+    "getir": ("Food & Groceries", "Groceries"),
+    "yemeksepeti": ("Food & Groceries", "Dining Out"),
+    "yemek sepeti": ("Food & Groceries", "Dining Out"),
+    "s sport": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
+    "nomupa": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
+    "iyzico": ("Shopping & Personal Care", "Electronics"), # General payment processor, assumption
+    "amazon": ("Shopping & Personal Care", "Electronics"),
+    "enpara.com cep": ("Debts & Liabilities", "Credit Card Payment"), # Internal transfer/payment
+    
+    # --- General ---
     "migros": ("Food & Groceries", "Groceries"),
     "carrefour": ("Food & Groceries", "Groceries"),
     "a101": ("Food & Groceries", "Groceries"),
     "bim": ("Food & Groceries", "Groceries"),
     "şok": ("Food & Groceries", "Groceries"),
     "sok": ("Food & Groceries", "Groceries"),
-    "getir": ("Food & Groceries", "Groceries"),
     "banabi": ("Food & Groceries", "Groceries"),
-    "yemeksepeti": ("Food & Groceries", "Dining Out"),
     "trendyol yemek": ("Food & Groceries", "Dining Out"),
     "kahve": ("Food & Groceries", "Coffee/Tea"),
     "starbucks": ("Food & Groceries", "Coffee/Tea"),
@@ -105,11 +116,10 @@ KEYWORD_MAP = {
     "aytemiz": ("Transportation", "Fuel"),
     "petrol ofisi": ("Transportation", "Fuel"),
 
-    # Shopping & Personal Care
+    # Shopping
     "hepsiburada": ("Shopping & Personal Care", "Electronics"),
     "trendyol": ("Shopping & Personal Care", "Clothing"),
     "n11": ("Shopping & Personal Care", "Electronics"),
-    "amazon": ("Shopping & Personal Care", "Electronics"),
     "boyner": ("Shopping & Personal Care", "Clothing"),
     "decathlon": ("Shopping & Personal Care", "Accessories"),
     "flo": ("Shopping & Personal Care", "Clothing"),
@@ -117,12 +127,11 @@ KEYWORD_MAP = {
     "zara": ("Shopping & Personal Care", "Clothing"),
     "hm ": ("Shopping & Personal Care", "Clothing"),
 
-    # Housing & Utilities
+    # Utilities
     "elektrik": ("Housing & Utilities", "Electricity"),
     "doğalgaz": ("Housing & Utilities", "Gas"),
     "dogalgaz": ("Housing & Utilities", "Gas"),
     "su faturası": ("Housing & Utilities", "Water"),
-    "su fatura": ("Housing & Utilities", "Water"),
     "internet": ("Housing & Utilities", "Internet"),
     "turkcell": ("Housing & Utilities", "Phone"),
     "vodafone": ("Housing & Utilities", "Phone"),
@@ -132,57 +141,29 @@ KEYWORD_MAP = {
     "ev kirası": ("Housing & Utilities", "Rent/Mortgage"),
     "aidat": ("Housing & Utilities", "Home Maintenance"),
 
-    # Healthcare & Wellness
+    # Health
     "eczane": ("Healthcare & Wellness", "Medicines"),
     "hastane": ("Healthcare & Wellness", "Doctor Visits"),
-    "hospital": ("Healthcare & Wellness", "Doctor Visits"),
 
-    # Insurance
-    "sigorta": ("Insurance", "Vehicle"),
-
-    # Education & Learning
-    "okul": ("Education & Learning", "Tuition"),
-    "üniversite": ("Education & Learning", "Tuition"),
-    "kurs": ("Education & Learning", "Courses"),
-
-    # Entertainment & Leisure / Subscriptions
-    "sinema": ("Entertainment & Leisure", "Movies"),
-    "cinema": ("Entertainment & Leisure", "Movies"),
+    # Streaming
     "spotify": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "netflix": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "youtube": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "blutv": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
     "exxen": ("Entertainment & Leisure", "Subscriptions (Netflix, Spotify)"),
 
-    # Travel & Holidays
-    "pegasus": ("Travel & Holidays", "Flights"),
-    "thy": ("Travel & Holidays", "Flights"),
-    "turkish airlines": ("Travel & Holidays", "Flights"),
-    "booking": ("Travel & Holidays", "Accommodation"),
-    "airbnb": ("Travel & Holidays", "Accommodation"),
-
-    # Banking / Transfers / Debts
-    "eft": ("Debts & Liabilities", "Credit Card Payment"),
+    # Financial
+    "eft": ("Debts & Liabilities", "Loan Payment"),
     "havale": ("Debts & Liabilities", "Loan Payment"),
-    "fast ": ("Debts & Liabilities", "Credit Card Payment"),
-    "iban": ("Debts & Liabilities", "Loan Payment"),
-    "para transfer": ("Debts & Liabilities", "Loan Payment"),
-    "virman": ("Debts & Liabilities", "Loan Payment"),
-    "nakit çekim": ("Transportation", "Tolls & Parking"),  # or Cash handling; adjust if needed
-    "atm": ("Transportation", "Tolls & Parking"),
+    "fast ": ("Debts & Liabilities", "Loan Payment"),
+    "nakit çekim": ("Miscellaneous", "Unplanned Purchases"),
+    "atm": ("Miscellaneous", "Unplanned Purchases"),
 
-    # Income signals
-    "maas": ("Salary & Wages", "Base Salary"),
-    "maaş": ("Salary & Wages", "Base Salary"),
-    "salary": ("Salary & Wages", "Base Salary"),
-    "ucret": ("Salary & Wages", "Base Salary"),
-    "ücret": ("Salary & Wages", "Base Salary"),
-
-    # Taxes & Fees
+    # Taxes/Fees
     "komisyon": ("Taxes & Fees", "Service Charges"),
     "hesap işletim": ("Taxes & Fees", "Service Charges"),
-    "isletim ücreti": ("Taxes & Fees", "Service Charges"),
     "bsmv": ("Taxes & Fees", "Income Tax"),
     "kkdf": ("Taxes & Fees", "Income Tax"),
     "vergi": ("Taxes & Fees", "Income Tax"),
+    "faiz": ("Debts & Liabilities", "Overdraft Fees"), # Interest
 }
