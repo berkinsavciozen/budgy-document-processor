@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
 
-from pdf_extractor import extract_transactions_from_pdf
+from llm_extractor import extract_transactions_from_pdf_llm as extract_transactions_from_pdf
 from categorizer import categorize
 from supabase_utils import (
     download_file_from_supabase,
